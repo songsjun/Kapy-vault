@@ -55,6 +55,8 @@ export class NavigationService {
   private contextEpoch?: number
   private persistedSecretIds = new Set<string>()
   private readonly routeStates = new Map<string, AuthorizedState>()
+  private secretsNavigation?: Promise<boolean>
+  private revokingForSecrets: boolean = false
 
   constructor(
     private readonly router: Router,
@@ -228,10 +230,39 @@ export class NavigationService {
   }
 
   public routeToSecretsTab(clearStack: boolean = false): Promise<boolean> {
-    this.access.lock()
-    this.clearSensitiveState()
-    // Drop Ionic's cached detail pages as well as browser history for a closed wallet.
-    return this.navCtrl.navigateRoot(rootPath, { replaceUrl: clearStack })
+    if (this.secretsNavigation) {
+      this.revokeForSecrets()
+      return this.secretsNavigation
+    }
+    let complete: (result: boolean | PromiseLike<boolean>) => void
+    let fail: (error: unknown) => void
+    const pending = new Promise<boolean>((resolve, reject) => { complete = resolve; fail = reject })
+    // Publish the pending return before lock(): its synchronous subscribers can
+    // also request the root page while Ionic is still showing the account page.
+    this.secretsNavigation = pending
+    const clear = () => { if (this.secretsNavigation === pending) { this.secretsNavigation = undefined } }
+    pending.then(clear, clear)
+    try {
+      this.revokeForSecrets()
+      // Drop Ionic's cached detail pages as well as browser history for a closed wallet.
+      complete(this.navCtrl.navigateRoot(rootPath, { replaceUrl: clearStack }))
+    } catch (error) {
+      fail(error)
+    }
+    return pending
+  }
+
+  private revokeForSecrets(): void {
+    if (this.revokingForSecrets) { return }
+    this.revokingForSecrets = true
+    try {
+      // Repeated requests must still cancel a newer unlock operation. Only
+      // synchronous feedback from the same revocation is suppressed.
+      this.access.lock()
+      this.clearSensitiveState()
+    } finally {
+      this.revokingForSecrets = false
+    }
   }
 
   public routeToScanTab(clearStack: boolean = false): Promise<boolean> {

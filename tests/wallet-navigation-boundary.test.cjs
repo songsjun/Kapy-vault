@@ -33,6 +33,7 @@ function fixture() {
   const subject = new BehaviorSubject(undefined)
   let epoch = 0
   let current
+  let currentSecret
   const access = {
     changes$: subject.asObservable(),
     isConfigured: (secret) => secret?.walletAccessVersion === 1,
@@ -41,11 +42,13 @@ function fixture() {
     requireDefault(secret) { if (!this.requireUnlocked(secret).isDefault) throw Error('default required') },
     getContextId() { return this.requireUnlocked().epoch },
     getOperationId() { return epoch },
+    getCurrentSecret() { return currentSecret },
+    getWallets() { return current?.wallets.slice() ?? [] },
     assertContext(value) { if (!current || value !== epoch) throw Error('stale context') },
     assertWallet(wallet) { if (!this.requireUnlocked().wallets.includes(wallet)) throw Error('foreign wallet') },
-    lock() { epoch++; current = undefined; subject.next(undefined) },
+    lock() { epoch++; current = undefined; currentSecret = undefined; subject.next(undefined) },
     open(secret, isDefault = true, wallets = []) {
-      this.lock(); current = { secretId: secret.id, profileId: 'profile-' + epoch, epoch, isDefault, wallets }; subject.next(current)
+      this.lock(); currentSecret = secret; current = { secretId: secret.id, profileId: 'profile-' + epoch, epoch, isDefault, wallets }; subject.next(current)
     },
     publishCurrent() { subject.next(current) }
   }
@@ -56,7 +59,7 @@ function fixture() {
   const rootCalls = []
   const navCtrl = { async navigateRoot(url, options) { rootCalls.push({ url, options }); return router.navigateByUrl(url) } }
   const navigation = new NavigationService(router, { back() {} }, navCtrl, access)
-  return { access, router, navigation, rootCalls }
+  return { access, router, navigation, rootCalls, navCtrl }
 }
 const secret = { id: 'saved-secret', walletAccessVersion: 1 }
 const draft = () => ({ id: 'fresh-secret', secretHex: '00000000000000000000000000000000' })
@@ -294,6 +297,7 @@ function displayPage(relative) {
   const module = { exports: {} }
   const resolve = (name) => {
     if (name === '@angular/core') return { Component: () => (value) => value, ViewChild: () => () => {} }
+    if (name.includes('error-handler.service')) return { ErrorCategory: {}, handleErrorLocal: () => () => {} }
     if (name.endsWith('/models/secret')) return { MnemonicSecret: class {
       constructor(secretHex, label) { this.secretHex = secretHex; this.label = label; this.fingerprint = '00000000' }
     } }
@@ -304,6 +308,98 @@ function displayPage(relative) {
   new Function('require', 'module', 'exports', code)(resolve, module, module.exports)
   return Object.values(module.exports)[0]
 }
+
+for (const trigger of ['back button', 'context revocation', 'root navigation request']) {
+  test(`return after an account address: ${trigger} closes the wallet without recursive root navigation`, async () => {
+    const setup = fixture()
+    const { access, navigation, router, rootCalls } = setup
+    const wallet = { protocol: { getName: async () => 'Bitcoin' } }
+    access.open(secret, true, [wallet])
+    await navigation.routeWithState('/accounts-list', { secret })
+    const Page = displayPage('accounts-list/accounts-list.page.ts')
+    const page = new Page({ is: () => false }, navigation, {}, {}, {}, {}, {}, access)
+    page.ionViewWillEnter()
+    page.ionViewDidLeave()
+    await navigation.routeWithState('/account-address', { secret, wallet })
+    assert.equal(navigation.canActivate('/accounts-list'), true)
+    await router.navigateByUrl('/accounts-list')
+    page.ionViewWillEnter()
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.equal(page.canView, true)
+    assert.equal(page.wallets$.value.length, 1)
+
+    // Bound emissions to expose the feedback loop without overflowing the test
+    // process. A correct return must not need this limit.
+    let lockCalls = 0
+    const lock = access.lock.bind(access)
+    access.lock = () => { if (++lockCalls <= 8) lock() }
+    if (trigger === 'back button') page.navigateToSecretsTab()
+    else if (trigger === 'context revocation') access.lock()
+    else navigation.routeToSecretsTab()
+    assert.equal(page.canView, false, 'revoke the visible account before awaiting navigation')
+    assert.equal(page.wallets$.value.length, 0)
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.ok(lockCalls < 8, `lock notification feedback loop: ${lockCalls} calls`)
+    assert.equal(rootCalls.length, 1, 'one return must result in one root navigation')
+    assert.equal(router.url, '/tabs/tab-secrets')
+    assert.equal(navigation.canActivate('/account-address'), false)
+    assert.equal(navigation.canActivate('/accounts-list'), false)
+    page.ngOnDestroy()
+  })
+}
+
+test('concurrent returns share the pending root navigation and can retry after failure', async () => {
+  const { navigation, access, navCtrl } = fixture()
+  access.open(secret)
+  const result = deferred()
+  let calls = 0
+  navCtrl.navigateRoot = () => { calls++; return result.promise }
+  const first = navigation.routeToSecretsTab()
+  const second = navigation.routeToSecretsTab()
+  assert.equal(access.isUnlocked(), false)
+  assert.equal(first, second)
+  assert.equal(calls, 1)
+  result.resolve(false)
+  assert.equal(await first, false)
+  navCtrl.navigateRoot = async () => { calls++; throw new Error('public navigation fixture') }
+  await assert.rejects(navigation.routeToSecretsTab(), /public navigation fixture/)
+  navCtrl.navigateRoot = async () => { calls++; return true }
+  assert.equal(await navigation.routeToSecretsTab(), true)
+  assert.equal(calls, 3)
+})
+
+test('a coalesced return still revokes a newly opened wallet and an in-flight unlock', async () => {
+  const { navigation, access, navCtrl } = fixture()
+  access.open(secret)
+  const result = deferred()
+  let calls = 0
+  navCtrl.navigateRoot = () => { calls++; return result.promise }
+  const returning = navigation.routeToSecretsTab()
+  access.open(secret)
+  assert.equal(access.isUnlocked(), true)
+  assert.equal(navigation.routeToSecretsTab(), returning)
+  assert.equal(access.isUnlocked(), false, 'a pending navigation must not bypass a new close request')
+  // unlock() advances the epoch before awaiting native storage, while no
+  // context exists yet. A subsequent close must invalidate that operation too.
+  access.lock()
+  const unlocking = access.getOperationId()
+  navigation.routeToSecretsTab()
+  assert.ok(access.getOperationId() > unlocking)
+  assert.equal(calls, 1)
+  result.resolve(true)
+  assert.equal(await returning, true)
+  navCtrl.navigateRoot = async () => { calls++; return true }
+  assert.equal(await navigation.routeToSecretsTab(), true)
+  assert.equal(calls, 2, 'a completed return must not suppress a later return')
+})
+
+test('a synchronously failing root navigation releases the pending return for retry', async () => {
+  const { navigation, navCtrl } = fixture()
+  navCtrl.navigateRoot = () => { throw new Error('public synchronous fixture') }
+  await assert.rejects(navigation.routeToSecretsTab(), /public synchronous fixture/)
+  navCtrl.navigateRoot = async () => true
+  assert.equal(await navigation.routeToSecretsTab(), true)
+})
 
 test('display cache cleanup clears its own copy without deleting the draft that SecretAdd is saving', async () => {
   const Show = displayPage('secret-show/secret-show.page.ts')

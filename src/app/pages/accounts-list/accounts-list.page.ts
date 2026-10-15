@@ -50,6 +50,10 @@ export class AccountsListPage {
           this.secret = this.walletAccess.getCurrentSecret()
           this.loadWallets().catch(handleErrorLocal(ErrorCategory.SECURE_STORAGE))
         } else {
+          // Closing the wallet emits synchronously. Stop observing as a visible
+          // page before root navigation locks it again.
+          this.active = false
+          this.secret = undefined
           this.navigationService.routeToSecretsTab().catch(handleErrorLocal(ErrorCategory.IONIC_NAVIGATION))
         }
       }
@@ -62,6 +66,7 @@ export class AccountsListPage {
     const requestedSecret: MnemonicSecret | undefined = this.navigationService.getState()?.secret
     const currentSecret = this.walletAccess.getCurrentSecret()
     if (!requestedSecret || !currentSecret || requestedSecret.id !== currentSecret.id || !this.walletAccess.isUnlocked(currentSecret)) {
+      this.active = false
       this.secret = undefined
       this.navigationService.routeToSecretsTab().catch(handleErrorLocal(ErrorCategory.IONIC_NAVIGATION))
       return
@@ -234,8 +239,9 @@ export class AccountsListPage {
   }
 
   public navigateToSecretsTab(): void {
-    this.walletAccess.lock()
+    this.active = false
     this.clearView()
+    this.secret = undefined
     this.navigationService.routeToSecretsTab().catch(handleErrorLocal(ErrorCategory.IONIC_NAVIGATION))
   }
 }
