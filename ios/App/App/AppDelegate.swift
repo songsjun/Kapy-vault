@@ -49,4 +49,43 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
 }
 
+// UIKit requires scene adoption for apps linked against the iOS 27 SDK.
+// Keep a single storyboard-backed window and forward scene URL events through
+// Capacitor's existing proxy. UIKit still sends the UIApplication notifications
+// used by AppPlugin, LocalAuthentication and SecureScreen; do not post them again.
+@available(iOS 13.0, *)
+class SceneDelegate: UIResponder, UIWindowSceneDelegate {
+  var window: UIWindow?
+
+  func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options connectionOptions: UIScene.ConnectionOptions) {
+    guard let windowScene = scene as? UIWindowScene else { return }
+    if window == nil {
+      let sceneWindow = UIWindow(windowScene: windowScene)
+      sceneWindow.rootViewController = UIStoryboard(name: "Main", bundle: nil).instantiateInitialViewController()
+      window = sceneWindow
+    }
+    (UIApplication.shared.delegate as? AppDelegate)?.window = window
+    // Load the bridge before forwarding cold-start URLs so AppPlugin can retain
+    // them until the JavaScript listener is ready.
+    window?.rootViewController?.loadViewIfNeeded()
+    window?.makeKeyAndVisible()
+    self.scene(scene, openURLContexts: connectionOptions.urlContexts)
+    for activity in connectionOptions.userActivities {
+      self.scene(scene, continue: activity)
+    }
+  }
+
+  func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) {
+    for context in URLContexts {
+      var options: [UIApplication.OpenURLOptionsKey: Any] = [.openInPlace: context.options.openInPlace]
+      if let source = context.options.sourceApplication { options[.sourceApplication] = source }
+      _ = ApplicationDelegateProxy.shared.application(UIApplication.shared, open: context.url, options: options)
+    }
+  }
+
+  func scene(_ scene: UIScene, continue userActivity: NSUserActivity) {
+    _ = ApplicationDelegateProxy.shared.application(UIApplication.shared, continue: userActivity, restorationHandler: { _ in })
+  }
+}
+
 
