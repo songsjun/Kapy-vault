@@ -11,6 +11,7 @@ const load = require('./helpers/source-loader.cjs')({
   [path.resolve(__dirname, '../src/app/services/error-handler/error-handler.service')]: { ErrorCategory: {}, handleErrorLocal: () => () => {} }
 })
 const { WalletAccessService } = load('src/app/services/wallet-access/wallet-access.service.ts')
+const crypto = load('src/app/services/wallet-access/wallet-secret-crypto.ts')
 const { SecretsService } = load('src/app/services/secrets/secrets.service.ts')
 const { MnemonicSecret } = load('src/app/models/secret.ts')
 const ENTROPY = '00000000000000000000000000000000'
@@ -19,23 +20,40 @@ const PI = 'separate derived wallet password'
 
 function fixture(initial = [], initializationBarrier) {
   const native = new Map()
-  const calls = { nativeGets: 0, entropyReads: 0, protocolGets: 0, derivations: 0 }
+  const calls = { nativeGets: 0, envelopeReads: 0, protocolGets: 0, derivations: 0, native: [] }
   let beforeRead
+  let beforeWrite
   let beforeRecovery
   let recoverySnapshot
-  const secure = { async get(alias) {
+  const secure = { async get(alias, isParanoia) {
     calls.nativeGets++
+    calls.native.push({ method: 'get', alias, isParanoia })
+    assert.equal(isParanoia, false, 'v2 uses the native normal mode')
+    assert.match(alias, /^wallet-v2-/)
     return {
       async getItem(key) {
+        assert.equal(key, alias, 'v2 native key and alias must agree')
+        calls.native.push({ method: 'getItem', alias, key, isParanoia })
         if (beforeRead) await beforeRead(key)
-        if (key === alias) calls.entropyReads++
+        calls.envelopeReads++
         const value = native.get(`${alias}:${key}`)
         if (value === undefined) throw new Error('Test native item does not exist')
         return { value }
       },
-      async setItem(key, value) { native.set(`${alias}:${key}`, value) },
-      async removeItem(key) { native.delete(`${alias}:${key}`) },
-      async setupRecoveryPassword(_key, payload) {
+      async setItem(key, value) {
+        assert.equal(key, alias)
+        calls.native.push({ method: 'setItem', alias, key, isParanoia })
+        if (beforeWrite) await beforeWrite(key, value)
+        native.set(`${alias}:${key}`, value)
+      },
+      async removeItem(key) {
+        assert.equal(key, alias)
+        calls.native.push({ method: 'removeItem', alias, key, isParanoia })
+        native.delete(`${alias}:${key}`)
+      },
+      async setupRecoveryPassword(key, payload) {
+        assert.equal(key, alias)
+        calls.native.push({ method: 'setupRecoveryPassword', alias, key, isParanoia })
         recoverySnapshot = payload
         if (beforeRecovery) await beforeRecovery()
         return { recoveryKey: 'public recovery test result' }
@@ -63,7 +81,40 @@ function fixture(initial = [], initializationBarrier) {
     { async create() { return { async present() {}, async dismiss() {} } } }, { instant: (value) => value },
     { async create() { return { async present() {} } } }, access)
   return { access, service, native, calls, provider, secure, storage, protocols,
-    metadata: () => metadata, recoverySnapshot: () => recoverySnapshot, beforeRead: (hook) => { beforeRead = hook }, beforeRecovery: (hook) => { beforeRecovery = hook } }
+    metadata: () => metadata, recoverySnapshot: () => recoverySnapshot,
+    beforeRead: (hook) => { beforeRead = hook }, beforeWrite: (hook) => { beforeWrite = hook }, beforeRecovery: (hook) => { beforeRecovery = hook } }
+}
+
+function nativeKey(secret) { return `wallet-v2-${secret.id}:wallet-v2-${secret.id}` }
+function envelope(f, secret) { return JSON.parse(f.native.get(nativeKey(secret))) }
+function assertCiphertext(value, passwords = [DEFAULT, PI]) {
+  const serialized = typeof value === 'string' ? value : JSON.stringify(value)
+  assert.ok(!serialized.includes(ENTROPY), 'native storage must not expose the test entropy')
+  assert.ok(!serialized.includes(entropyToMnemonic(ENTROPY)), 'native storage must not expose the mnemonic')
+  for (const password of passwords) assert.ok(!serialized.includes(password), 'native storage must not contain a wallet password')
+  for (const name of ['entropy', 'registry', 'plaintext', 'verifier']) {
+    assert.ok(!serialized.includes(`"${name}"`), `native storage must not expose ${name}`)
+  }
+}
+function deferred() {
+  let resolve
+  const promise = new Promise((done) => { resolve = done })
+  return { promise, resolve }
+}
+
+// Pause after the actual WebCrypto implementation has completed. No cryptographic
+// primitive is stubbed; the extra await makes cancellation deterministic.
+function pauseCryptoResult(method) {
+  const original = crypto[method]
+  const reached = deferred()
+  const resume = deferred()
+  crypto[method] = async (...args) => {
+    const result = await original(...args)
+    reached.resolve(result)
+    await resume.promise
+    return result
+  }
+  return { reached: reached.promise, release: resume.resolve, restore: () => { crypto[method] = original } }
 }
 
 async function create(f, entropy = ENTROPY) {
@@ -105,18 +156,21 @@ test('default password opens the original empty-passphrase ETH account', async (
   assert.notEqual(wallet.publicKey, wrong)
 })
 
-test('registration does not derive accounts; only salted verifiers and configurations are stored', async () => {
+test('registration does not derive or open accounts and native storage contains only encrypted data and key slots', async () => {
   const f = fixture()
   const secret = await create(f)
   const count = f.calls.derivations
   await f.access.registerPassphrase(secret, PI)
   assert.equal(f.calls.derivations, count)
-  const registry = JSON.parse(f.native.get(`${secret.id}:${secret.id}`)).registry
-  assert.equal(registry.entries.length, 2)
-  assert.notEqual(registry.entries[0].verifier.salt, registry.entries[1].verifier.salt)
-  assert.deepEqual(registry.entries[1].accounts, [])
-  const record = JSON.stringify(registry)
-  assert.ok(!record.includes(PI) && !record.includes(DEFAULT))
+  const stored = envelope(f, secret)
+  assert.equal(stored.format, 'airgap-wallet-access-v2')
+  assert.equal(stored.kdf.algorithm, 'pbkdf2-sha512')
+  assert.equal(stored.kdf.iterations, 220000)
+  assert.equal(stored.slots.length, 2)
+  assert.equal(new Set(stored.slots.map((slot) => slot.id)).size, 2)
+  assert.equal(f.access.isDefaultUnlocked(secret), true)
+  assert.deepEqual(f.access.getWallets(), [])
+  assertCiphertext(stored)
   assert.ok(!JSON.stringify(f.metadata()).includes('verifier'))
 })
 
@@ -145,13 +199,14 @@ test('unknown password never derives accounts or grants access to the encrypted 
   const f = fixture()
   const secret = await create(f)
   await add(f, secret)
-  const reads = f.calls.entropyReads
+  const reads = f.calls.envelopeReads
   const derives = f.calls.derivations
   await assert.rejects(f.access.unlock(secret, 'not registered'), /Incorrect wallet password/)
-  // The single encrypted native record contains both the registry and entropy.
-  assert.equal(f.calls.entropyReads, reads + 1)
+  // Reading ciphertext is necessary to try a key slot; it grants no entropy access.
+  assert.equal(f.calls.envelopeReads, reads + 1)
   assert.equal(f.calls.derivations, derives)
   assert.equal(f.access.isUnlocked(), false)
+  await assert.rejects(f.service.retrieveEntropyForSecret(secret), /Open the Secret/)
   assert.deepEqual(secret.wallets, [])
 })
 
@@ -202,18 +257,31 @@ test('changing D preserves original addresses and does not change Pi', async () 
   const wallet = await add(f, secret)
   const expected = wallet.publicKey
   await f.access.registerPassphrase(secret, PI)
+  await f.access.unlock(secret, PI)
+  const piWallet = await add(f, secret)
+  const piKey = piWallet.publicKey
+  const piProfile = f.access.requireUnlocked().profileId
+  await f.access.unlock(secret, DEFAULT)
+  const defaultProfile = f.access.requireUnlocked().profileId
+  const originalPiSlot = envelope(f, secret).slots.find((slot) => slot.id === piProfile)
   await f.access.changeDefaultPassword(secret, 'replacement default')
+  assert.deepEqual(envelope(f, secret).slots.find((slot) => slot.id === piProfile), originalPiSlot)
   await assert.rejects(f.access.unlock(secret, DEFAULT), /Incorrect/)
   await f.access.unlock(secret, 'replacement default')
+  assert.equal(f.access.requireUnlocked().profileId, defaultProfile)
+  assert.equal(f.access.getPassphrase(), '')
   assert.equal(f.access.getWallets()[0].publicKey, expected)
   await f.access.unlock(secret, PI)
   assert.equal(f.access.getPassphrase(), PI)
+  assert.equal(f.access.requireUnlocked().profileId, piProfile)
+  assert.equal(f.access.getWallets()[0].publicKey, piKey)
+  assertCiphertext(envelope(f, secret), [DEFAULT, PI, 'replacement default'])
 })
 
 test('duplicate credentials are rejected and concurrent registrations cannot overwrite each other', async () => {
   const f = fixture()
   const secret = await create(f)
-  await assert.rejects(f.access.registerPassphrase(secret, DEFAULT), /already registered/)
+  await assert.rejects(f.access.registerPassphrase(secret, DEFAULT), /already (registered|exists)/)
   await Promise.all([f.access.registerPassphrase(secret, 'first'), f.access.registerPassphrase(secret, 'second')])
   assert.equal((await f.access.listPassphrases(secret)).length, 3)
   await f.access.unlock(secret, 'first')
@@ -229,7 +297,7 @@ test('cancel during native registry read prevents late unlocking', async () => {
   let entered
   const reading = new Promise((resolve) => { entered = resolve })
   f.beforeRead(async (key) => {
-    if (key === secret.id) { entered(); await new Promise((resolve) => { release = resolve }) }
+    if (key === `wallet-v2-${secret.id}`) { entered(); await new Promise((resolve) => { release = resolve }) }
   })
   const pending = f.access.unlock(secret, DEFAULT)
   await reading
@@ -270,12 +338,11 @@ test('legacy public records are preserved without automatic migration when new S
   assert.deepEqual(f.metadata().find((secret) => secret.id === 'legacy'), legacy)
 })
 
-test('corrupted registry format fails closed without interpreting a password as a new wallet', async () => {
+test('a malformed encrypted envelope fails closed without interpreting a password as a new wallet', async () => {
   const f = fixture()
   const secret = await create(f)
-  f.native.set(`${secret.id}:${secret.id}`, JSON.stringify({ format: 'airgap-wallet-access-v1', secretId: secret.id, entropy: ENTROPY,
-    registry: { version: 1, secretId: 'another Secret', entries: [] } }))
-  await assert.rejects(f.access.unlock(secret, DEFAULT), /Invalid wallet password registry/)
+  f.native.set(nativeKey(secret), JSON.stringify({ format: 'airgap-wallet-access-v2', secretId: 'another Secret', slots: [], payload: {} }))
+  await assert.rejects(f.access.unlock(secret, DEFAULT), /Invalid|Unsupported/)
   assert.equal(f.access.isUnlocked(), false)
 })
 
@@ -308,7 +375,7 @@ test('cancelling before initialization finishes prevents late Secret creation', 
   assert.equal(f.native.size, 0)
 })
 
-test('one native recovery snapshot restores entropy, registered passwords and account templates together', async () => {
+test('one encrypted native recovery snapshot restores passwords and account templates but still requires a wallet password', async () => {
   const f = fixture()
   const secret = await create(f)
   await f.access.registerPassphrase(secret, PI)
@@ -318,13 +385,15 @@ test('one native recovery snapshot restores entropy, registered passwords and ac
   await f.access.unlock(secret, DEFAULT)
   await f.service.resetRecoveryPassword(secret)
   const snapshot = f.recoverySnapshot()
-  assert.equal(JSON.parse(snapshot).format, 'airgap-wallet-access-v1')
-  assert.equal(JSON.parse(snapshot).registry.entries.length, 2)
-  assert.equal(JSON.parse(snapshot).entropy, ENTROPY)
+  assert.equal(JSON.parse(snapshot).format, 'airgap-wallet-access-v2')
+  assert.equal(JSON.parse(snapshot).slots.length, 2)
+  assertCiphertext(snapshot)
   f.access.lock()
   f.native.clear()
   // Simulate the original native single-item recovery returning its saved string.
-  f.native.set(`${secret.id}:${secret.id}`, snapshot)
+  f.native.set(nativeKey(secret), snapshot)
+  await assert.rejects(f.access.unlock(secret, 'wrong recovery wallet password'), /Incorrect/)
+  await assert.rejects(f.service.retrieveEntropyForSecret(secret), /Open the Secret/)
   await f.access.unlock(secret, PI)
   assert.equal(f.access.getWallets()[0].publicKey, expected)
   assert.equal(await f.service.retrieveEntropyForSecret(secret), ENTROPY)
@@ -340,9 +409,9 @@ test('changing registered credentials marks the previous recovery snapshot as ou
   assert.equal(secret.hasRecoveryKey, false)
   assert.equal(f.metadata()[0].hasRecoveryKey, false)
   // No promise of revoking old copies: native recovery remains a point-in-time snapshot.
-  assert.equal(JSON.parse(f.recoverySnapshot()).registry.entries.length, 1)
+  assert.equal(JSON.parse(f.recoverySnapshot()).slots.length, 1)
   await f.service.resetRecoveryPassword(secret)
-  assert.equal(JSON.parse(f.recoverySnapshot()).registry.entries.length, 2)
+  assert.equal(JSON.parse(f.recoverySnapshot()).slots.length, 2)
   assert.equal(f.metadata()[0].hasRecoveryKey, true)
 })
 
@@ -361,4 +430,413 @@ test('failed public metadata save keeps the draft retryable without publishing a
   await f.service.createSecret(draft, DEFAULT)
   assert.equal(f.access.isDefaultUnlocked(draft), true)
   assert.equal(f.metadata().length, 1)
+})
+
+test('fresh Secrets use version 2 and only the independent native normal-mode alias through recovery and deletion', async () => {
+  const f = fixture()
+  const secret = new MnemonicSecret(ENTROPY)
+  secret.isParanoia = true
+  await f.service.createSecret(secret, DEFAULT)
+  assert.equal(secret.walletAccessVersion, 2)
+  assert.equal(secret.isParanoia, false)
+  assert.deepEqual(f.access.getStorageLocation(secret), { alias: `wallet-v2-${secret.id}`, key: `wallet-v2-${secret.id}`, isParanoia: false })
+  await f.service.resetRecoveryPassword(secret)
+  await f.access.registerPassphrase(secret, PI)
+  await f.service.remove(secret)
+  assert.equal(f.native.size, 0)
+  assert.deepEqual(f.metadata(), [])
+  assert.equal(f.access.isUnlocked(), false)
+  assert.ok(f.calls.native.some((call) => call.method === 'setupRecoveryPassword'))
+  assert.ok(f.calls.native.some((call) => call.method === 'removeItem'))
+  for (const call of f.calls.native) {
+    assert.equal(call.alias, `wallet-v2-${secret.id}`)
+    assert.equal(call.isParanoia, false)
+    if (call.key) assert.equal(call.key, `wallet-v2-${secret.id}`)
+  }
+})
+
+test('entropy reads preserve native authentication while account commits use the current encrypted session', async () => {
+  const f = fixture()
+  const secret = await create(f)
+  const reads = f.calls.envelopeReads
+  assert.equal(await f.service.retrieveEntropyForSecret(secret), ENTROPY)
+  assert.equal(await f.service.retrieveEntropyForSecret(secret), ENTROPY)
+  assert.equal(f.calls.envelopeReads, reads + 2)
+  const wallet = await add(f, secret)
+  assert.equal(f.calls.envelopeReads, reads + 3, 'adding an account must also authorize the entropy read')
+  wallet.addressIndex = 1
+  await f.access.updateAccount(wallet)
+  assert.equal(f.calls.envelopeReads, reads + 3, 'account-only commit must not reread native entropy')
+  assertCiphertext(envelope(f, secret))
+  assert.ok(!JSON.stringify(envelope(f, secret)).includes(wallet.publicKey))
+})
+
+test('an unlocked session cannot disclose entropy or derive a new account when the native read is refused', async () => {
+  const f = fixture()
+  const secret = await create(f)
+  const derivations = f.calls.derivations
+  const before = f.native.get(nativeKey(secret))
+  f.beforeRead(async () => { throw new Error('Test native authentication refused') })
+  await assert.rejects(f.service.retrieveEntropyForSecret(secret), /native authentication refused/)
+  await assert.rejects(add(f, secret), /native authentication refused/)
+  assert.equal(f.calls.derivations, derivations)
+  assert.deepEqual(f.access.getWallets(), [])
+  assert.equal(f.native.get(nativeKey(secret)), before)
+  f.beforeRead(undefined)
+  assert.equal(await f.service.retrieveEntropyForSecret(secret), ENTROPY)
+})
+
+test('lock while the entropy native read is pending rejects its late result before payload decryption', async () => {
+  const f = fixture()
+  const secret = await create(f)
+  const entered = deferred()
+  const resume = deferred()
+  let decryptions = 0
+  const original = crypto.decryptPayload
+  crypto.decryptPayload = (...args) => { decryptions++; return original(...args) }
+  f.beforeRead(async () => { entered.resolve(); await resume.promise })
+  try {
+    const pending = f.service.retrieveEntropyForSecret(secret)
+    await entered.promise
+    f.access.lock()
+    resume.resolve()
+    await assert.rejects(pending, /changed/)
+    assert.equal(decryptions, 0)
+    assert.equal(f.access.isUnlocked(), false)
+  } finally {
+    resume.resolve()
+    crypto.decryptPayload = original
+  }
+})
+
+test('removing Pi removes its decrypting slot and accounts while the default branch keeps its original address', async () => {
+  const f = fixture()
+  const secret = await create(f)
+  const defaultKey = (await add(f, secret)).publicKey
+  await f.access.registerPassphrase(secret, PI)
+  const piId = (await f.access.listPassphrases(secret)).find((entry) => !entry.isDefault).id
+  await f.access.unlock(secret, PI)
+  const piKey = (await add(f, secret)).publicKey
+  assert.notEqual(piKey, defaultKey)
+  await f.access.unlock(secret, DEFAULT)
+  await f.access.removePassphrase(secret, piId)
+  assert.equal(envelope(f, secret).slots.length, 1)
+  assert.ok(!envelope(f, secret).slots.some((slot) => slot.id === piId))
+  await assert.rejects(f.access.unlock(secret, PI), /Incorrect/)
+  await f.access.unlock(secret, DEFAULT)
+  assert.deepEqual(f.access.getWallets().map((wallet) => wallet.publicKey), [defaultKey])
+  assert.equal(await f.service.retrieveEntropyForSecret(secret), ENTROPY)
+  assert.equal((await f.access.listPassphrases(secret)).length, 1)
+})
+
+test('lock zeros the retained session data key and revokes entropy and passphrase access', async () => {
+  const f = fixture()
+  const secret = await create(f)
+  await f.access.registerPassphrase(secret, PI)
+  await f.access.unlock(secret, PI)
+  // Keep the same backing buffer to distinguish overwriting from dropping a reference.
+  const key = f.access.current.key
+  assert.equal(key.length, 32)
+  assert.ok(key.some((byte) => byte !== 0))
+  f.access.lock()
+  assert.ok(key.every((byte) => byte === 0))
+  assert.equal(f.access.current, undefined)
+  assert.throws(() => f.access.getPassphrase(secret), /Open the Secret/)
+  await assert.rejects(f.service.retrieveEntropyForSecret(secret), /Open the Secret/)
+})
+
+test('cancelling after real key unwrap completes clears its data key and publishes no late context', async () => {
+  const f = fixture()
+  const secret = await create(f)
+  f.access.lock()
+  const published = []
+  const subscription = f.access.changes$.subscribe((context) => { if (context) published.push(context) })
+  const barrier = pauseCryptoResult('openEnvelope')
+  try {
+    const pending = f.access.unlock(secret, DEFAULT)
+    const opened = await barrier.reached
+    assert.ok(opened.key.some((byte) => byte !== 0))
+    f.access.lock()
+    barrier.release()
+    await assert.rejects(pending, /cancelled/)
+    assert.ok(opened.key.every((byte) => byte === 0))
+    assert.equal(f.access.isUnlocked(), false)
+    assert.deepEqual(published, [])
+  } finally {
+    barrier.release()
+    barrier.restore()
+    subscription.unsubscribe()
+  }
+})
+
+test('an older unlock finishing after a newer Pi unlock cannot replace or clear the new context', async () => {
+  const f = fixture()
+  const secret = await create(f)
+  await f.access.registerPassphrase(secret, PI)
+  const barrier = pauseCryptoResult('openEnvelope')
+  try {
+    const older = f.access.unlock(secret, DEFAULT)
+    const opened = await barrier.reached
+    barrier.restore()
+    await f.access.unlock(secret, PI)
+    const context = f.access.requireUnlocked()
+    barrier.release()
+    await assert.rejects(older, /cancelled/)
+    assert.ok(opened.key.every((byte) => byte === 0))
+    assert.equal(f.access.requireUnlocked(), context)
+    assert.equal(f.access.getPassphrase(), PI)
+    assert.equal(await f.service.retrieveEntropyForSecret(secret), ENTROPY)
+  } finally {
+    barrier.release()
+    barrier.restore()
+  }
+})
+
+test('lock while a real payload decryption is pending prevents late entropy disclosure', async () => {
+  const f = fixture()
+  const secret = await create(f)
+  const barrier = pauseCryptoResult('decryptPayload')
+  try {
+    const pending = f.service.retrieveEntropyForSecret(secret)
+    await barrier.reached
+    f.access.lock()
+    barrier.release()
+    await assert.rejects(pending, /changed/)
+    assert.equal(f.access.isUnlocked(), false)
+  } finally {
+    barrier.release()
+    barrier.restore()
+  }
+})
+
+test('lock during key-slot creation also cancels queued registration and leaves storage unchanged', async () => {
+  const f = fixture()
+  const secret = await create(f)
+  const before = f.native.get(nativeKey(secret))
+  const barrier = pauseCryptoResult('addKeySlot')
+  try {
+    const pending = f.access.registerPassphrase(secret, PI)
+    await barrier.reached
+    const queued = f.access.registerPassphrase(secret, 'queued password')
+    const checks = [assert.rejects(pending, /changed/), assert.rejects(queued, /changed/)]
+    f.access.lock()
+    barrier.release()
+    await Promise.all(checks)
+    assert.equal(f.native.get(nativeKey(secret)), before)
+    assert.equal(f.access.isUnlocked(), false)
+  } finally {
+    barrier.release()
+    barrier.restore()
+  }
+})
+
+test('lock while native creation is pending cannot publish a new Secret or unlocked context', async () => {
+  const f = fixture()
+  const entered = deferred()
+  const resume = deferred()
+  f.beforeWrite(async () => { entered.resolve(); await resume.promise })
+  const pending = f.service.createSecret(new MnemonicSecret(ENTROPY), DEFAULT)
+  await entered.promise
+  f.access.lock()
+  resume.resolve()
+  await assert.rejects(pending, /cancelled/)
+  assert.equal(f.access.isUnlocked(), false)
+  assert.deepEqual(f.metadata(), [])
+  for (const record of f.native.values()) assertCiphertext(record)
+})
+
+test('a failed native password change preserves the old persisted password and does not publish the replacement', async () => {
+  const f = fixture()
+  const secret = await create(f)
+  const before = f.native.get(nativeKey(secret))
+  f.beforeWrite(async () => { throw new Error('Test native write failure') })
+  await assert.rejects(f.access.changeDefaultPassword(secret, 'replacement that did not save'), /native write failure/)
+  assert.equal(f.native.get(nativeKey(secret)), before)
+  f.beforeWrite(undefined)
+  await assert.rejects(f.access.unlock(secret, 'replacement that did not save'), /Incorrect/)
+  await f.access.unlock(secret, DEFAULT)
+  assert.equal(f.access.getPassphrase(), '')
+})
+
+test('tampered ciphertext, key slots and Secret headers are rejected before account derivation', async (t) => {
+  const f = fixture()
+  const secret = await create(f)
+  await add(f, secret)
+  await f.access.registerPassphrase(secret, PI)
+  const original = envelope(f, secret)
+  const flip = (value) => (value[0] === '0' ? '1' : '0') + value.slice(1)
+  const variants = [
+    ['payload ciphertext', (value) => { value.payload.data = flip(value.payload.data) }],
+    ['payload nonce', (value) => { value.payload.iv = flip(value.payload.iv) }],
+    ['default wrapped key', (value) => { value.slots[0].key = flip(value.slots[0].key) }],
+    ['other branch wrapped key', (value) => { value.slots[1].key = flip(value.slots[1].key) }],
+    ['other branch identity', (value) => { value.slots[1].id = flip(value.slots[1].id) }],
+    ['slot removal without payload update', (value) => { value.slots.pop() }],
+    ['different Secret', (value) => { value.secretId = 'different-secret' }],
+    ['unbounded KDF parameters', (value) => { value.kdf.iterations = 2147483647 }]
+  ]
+  for (const [name, corrupt] of variants) {
+    await t.test(name, async () => {
+      const changed = structuredClone(original)
+      corrupt(changed)
+      f.native.set(nativeKey(secret), JSON.stringify(changed))
+      const derivations = f.calls.derivations
+      await assert.rejects(f.access.unlock(secret, DEFAULT), /Incorrect|Invalid|corrupted|authentication/)
+      assert.equal(f.calls.derivations, derivations)
+      assert.equal(f.access.isUnlocked(), false)
+      await assert.rejects(f.service.retrieveEntropyForSecret(secret), /Open the Secret/)
+    })
+  }
+  f.native.set(nativeKey(secret), JSON.stringify(original))
+  await f.access.unlock(secret, DEFAULT)
+  assert.equal(f.access.getWallets().length, 1)
+})
+
+test('account updates use fresh payload nonces and preserve existing password slots', async () => {
+  const f = fixture()
+  const secret = await create(f)
+  await f.access.registerPassphrase(secret, PI)
+  const before = envelope(f, secret)
+  const wallet = await add(f, secret)
+  const after = envelope(f, secret)
+  assert.notEqual(after.payload.iv, before.payload.iv)
+  assert.notEqual(after.payload.data, before.payload.data)
+  assert.deepEqual(after.slots, before.slots)
+  wallet.addressIndex = 1
+  await f.access.updateAccount(wallet)
+  const updated = envelope(f, secret)
+  assert.notEqual(updated.payload.iv, after.payload.iv)
+  assert.deepEqual(updated.slots, before.slots)
+})
+
+test('D cannot become a registered Pi and the default password entry cannot be removed', async () => {
+  const f = fixture()
+  const secret = await create(f)
+  await f.access.registerPassphrase(secret, PI)
+  const before = f.native.get(nativeKey(secret))
+  const defaultId = (await f.access.listPassphrases(secret)).find((entry) => entry.isDefault).id
+  await assert.rejects(f.access.changeDefaultPassword(secret, PI), /already (registered|exists)/)
+  await assert.rejects(f.access.removePassphrase(secret, defaultId), /cannot be removed/)
+  assert.equal(f.native.get(nativeKey(secret)), before)
+  await f.access.unlock(secret, DEFAULT)
+  assert.equal(f.access.getPassphrase(), '')
+})
+
+test('lock during an issued native account write cannot republish its wallets or data key', async () => {
+  const f = fixture()
+  const secret = await create(f)
+  const key = f.access.current.key
+  const entered = deferred()
+  const resume = deferred()
+  f.beforeWrite(async () => { entered.resolve(); await resume.promise })
+  const published = []
+  const subscription = f.access.changes$.subscribe((context) => { if (context) published.push(context) })
+  try {
+    const pending = add(f, secret)
+    await entered.promise
+    published.length = 0
+    f.access.lock()
+    resume.resolve()
+    await assert.rejects(pending, /changed/)
+    assert.equal(f.access.isUnlocked(), false)
+    assert.deepEqual(secret.wallets, [])
+    assert.deepEqual(published, [])
+    assert.ok(key.every((byte) => byte === 0))
+    // An already-issued native write can finish. Its result must remain ciphertext
+    // and must not restore runtime authorization after lock.
+    assertCiphertext(envelope(f, secret))
+  } finally {
+    resume.resolve()
+    subscription.unsubscribe()
+  }
+})
+
+test('unlock drains an issued password write so the old D cannot open a stale session or roll back key slots', async () => {
+  const f = fixture()
+  const secret = await create(f)
+  const expected = (await add(f, secret)).publicKey
+  const entered = deferred()
+  const resume = deferred()
+  const replacement = 'new default after pending native write'
+  f.beforeWrite(async () => { entered.resolve(); await resume.promise })
+  const changing = f.access.changeDefaultPassword(secret, replacement)
+  const cancelledChange = assert.rejects(changing, /changed/)
+  let opening
+  try {
+    await entered.promise
+    f.access.lock()
+    const reads = f.calls.envelopeReads
+    opening = f.access.unlock(secret, DEFAULT).then(
+      () => ({ opened: true }),
+      (error) => ({ opened: false, error })
+    )
+    // Flush promise work without waiting for the still-paused native operation.
+    await new Promise(setImmediate)
+    const readsBeforeWriteFinished = f.calls.envelopeReads - reads
+    resume.resolve()
+    await cancelledChange
+    const result = await opening
+    assert.equal(result.opened, false, 'a revoked D must not open using the pre-write envelope')
+    assert.match(result.error.message, /Incorrect wallet password/)
+    assert.equal(readsBeforeWriteFinished, 0, 'unlock must wait before reading a native item that an older task is writing')
+    assert.equal(f.access.isUnlocked(), false)
+  } finally {
+    resume.resolve()
+    await cancelledChange
+    if (opening) await opening
+    f.beforeWrite(undefined)
+  }
+  await f.access.unlock(secret, replacement)
+  assert.equal(f.access.getWallets()[0].publicKey, expected)
+  const btc = await add(f, secret, 'btc')
+  const btcKey = btc.publicKey
+  f.access.lock()
+  await assert.rejects(f.access.unlock(secret, DEFAULT), /Incorrect wallet password/)
+  await f.access.unlock(secret, replacement)
+  assert.deepEqual(f.access.getWallets().map((wallet) => wallet.publicKey), [expected, btcKey])
+})
+
+test('recovery snapshot creation finishes before queued registration marks that snapshot outdated', async () => {
+  const f = fixture()
+  const secret = await create(f)
+  const entered = deferred()
+  const resume = deferred()
+  f.beforeRecovery(async () => { entered.resolve(); await resume.promise })
+  const metadataFlags = []
+  const save = f.storage.set
+  f.storage.set = async (...args) => {
+    metadataFlags.push(args[1].find((record) => record.id === secret.id).hasRecoveryKey)
+    return save(...args)
+  }
+  let registrationStarted = false
+  const original = crypto.addKeySlot
+  crypto.addKeySlot = (...args) => { registrationStarted = true; return original(...args) }
+  const recovery = f.service.resetRecoveryPassword(secret)
+  let registration
+  try {
+    await entered.promise
+    assert.equal(JSON.parse(f.recoverySnapshot()).slots.length, 1)
+    registration = f.access.registerPassphrase(secret, PI)
+    await new Promise(setImmediate)
+    const startedBeforeRecoveryFinished = registrationStarted
+    // A broken, unserialized implementation is allowed to complete here so its
+    // late recovery result also exposes the incorrect final metadata flag.
+    if (startedBeforeRecoveryFinished) await registration
+    resume.resolve()
+    assert.equal(await recovery, 'public recovery test result')
+    await registration
+    assert.equal(JSON.parse(f.recoverySnapshot()).slots.length, 1)
+    assert.equal(envelope(f, secret).slots.length, 2)
+    assert.equal(secret.hasRecoveryKey, false)
+    assert.equal(f.metadata()[0].hasRecoveryKey, false)
+    assert.deepEqual(metadataFlags, [true, false])
+    assert.equal(startedBeforeRecoveryFinished, false, 'registration must wait for recovery setup and its metadata update')
+    assertCiphertext(f.recoverySnapshot())
+  } finally {
+    resume.resolve()
+    await recovery
+    if (registration) await registration
+    crypto.addKeySlot = original
+    f.storage.set = save
+  }
 })

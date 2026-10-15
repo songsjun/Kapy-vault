@@ -2,83 +2,106 @@ Wallet access in the original AirGap Vault
 
 Scope
 This implementation is in airgap-vault. The separate web and web-local projects
-are not part of this change. Native Keychain/Keystore encryption, Paranoia and
-their authentication policies remain unchanged. There is no idle timer.
+are not part of this change. It targets a fresh installation; v1 data migration
+is not implemented. Android now requires API 23 or later. There is no idle timer.
 
 User flow
 1. Create/import a mnemonic and save a named Secret with a confirmed nonempty
-   default password D.
-2. The Secret list displays the base Secret without deriving or displaying its
-   password-specific accounts.
-3. Open a Secret and enter its wallet password. D selects an empty BIP39
-   passphrase. A registered Pi selects the exact entered Pi. Unknown input fails.
-4. Add the desired coin accounts, networks and paths within the selected wallet.
-   A newly registered Pi initially has no accounts; add accounts after opening it.
-5. Open Secret management from the default wallet to register/remove Pi or change
-   D. Changing D preserves addresses. Changing Pi is not a password reset: it
-   selects a different derived wallet.
-6. Return to the Secret list, switch Secrets, or background the native App to close
-   the current wallet. Native authentication-only interruptions do not close it.
-7. Open the desired wallet and add its accounts before scanning a signing request.
-   Requests cannot silently select another Secret or password branch.
+   default password D. There is no separate Paranoia encryption password.
+2. The Secret list displays only base Secret metadata, without native reads,
+   wallet derivation or password-specific accounts.
+3. Enter D or a registered Pi once. That input unwraps the Secret's data key and
+   selects the matching wallet. D selects an empty BIP39 passphrase. Pi selects
+   the exact entered Pi. Unknown input fails authenticated decryption.
+4. A new Pi has no coin accounts. Open it and add the desired accounts and paths.
+5. Only D opens Secret management to register/remove Pi or change D. Changing D
+   preserves addresses. A different Pi selects a different derived wallet.
+6. Returning to the Secret list, switching Secrets, or backgrounding the native
+   App closes the wallet and overwrites the held raw data-key buffer. Native
+   authentication-only interruptions do not close it. System authentication can
+   still be required when accessing native storage; it is not another wallet
+   password.
 
 Storage and algorithms
-Public app storage contains Secret metadata and walletAccessVersion=1, with an
-empty wallets array. It contains no password verifier, mnemonic, account public
-key or password-specific account configuration for new-format Secrets.
+Public app storage contains metadata and walletAccessVersion=2, with an empty
+wallets array. It contains no mnemonic, data key, password, key slot, verifier,
+account public key or password-specific account configuration.
 
-One native encrypted item, keyed by secret.id, contains:
-  {format: "airgap-wallet-access-v1", secretId, entropy, registry}
-The registry contains salted password verifiers and each registered password's
-account templates: protocol, network, derivation path, HD type, status and index.
-The native item remains protected by AirGap's existing platform encryption.
+Native alias and item key both equal wallet-v2-<secret.id>. This avoids sharing
+an old Paranoia private-key alias or iOS item account. Native ordinary-mode
+Keychain/Secure Enclave or Keystore protection remains in place.
 
-Password verification uses the existing vendored PBKDF2/HMAC-SHA512 primitive,
-2048 iterations, independent random 16-byte salts, and 32-byte outputs. This is
-an application verifier, not an extra encryption layer for the mnemonic and not
-a change to BIP39 or protocol-specific key derivation. No Argon2 is introduced.
-Passwords use raw UTF-8; whitespace, case and Unicode representation are kept.
-Each protocol still applies its own existing derivation semantics. Different raw
-strings can yield the same wallet for protocols that normalize those strings.
-The verifier accepts at most 1024 UTF-8 bytes. A Secret has at most 32 registered
-credentials, including D. There is no configurable memory parameter.
+The single native encrypted item contains an additional encrypted envelope:
+  {format: "airgap-wallet-access-v2", secretId, kdf, slots, payload}
+A random 32-byte data-encryption key (DEK) encrypts the entropy and registry with
+AES-256-GCM. Every stored ciphertext has a fresh random 12-byte IV and a 128-bit
+authentication tag. Each registered D/Pi wraps the same DEK in a separate slot.
 
-Runtime access
-Only the current wallet's accounts and its Pi are retained while open. Pi is not
-placed in route state, NgRx actions or public metadata. D itself is not retained
-as the derivation passphrase. The authorization epoch changes on closing or
-switching wallets, without adding an idle timeout. Signing, sharing and sensitive
-page results are rejected if their epoch has expired. Native storage reads still
-use the original platform authentication.
+PBKDF2-HMAC-SHA512 derives one 256-bit wrapping key per password input, using a
+random 16-byte salt per Secret and 220,000 iterations. The salt/KDF remain stable
+when changing D so other Pi slots remain usable without knowing their plaintext.
+The fixed iteration count is validated before derivation. BIP39 and all existing
+protocol derivation parameters remain unchanged, including BIP39's own iteration
+count. No Argon2 or new cryptographic implementation is introduced. Standard Web
+Crypto performs PBKDF2 and AES-GCM; unsupported environments fail closed.
 
-Recovery and compatibility
-Android's existing RecoveryKey copies one native item. Using one encrypted record
-therefore restores the mnemonic, verifier table and account templates together.
-It is a POINT-IN-TIME SNAPSHOT. Changing credentials or account templates marks
-the existing recovery snapshot as outdated in app metadata. Generate and save a
-new RecoveryKey after such changes. Old snapshots can restore old passwords and
-accounts. The original native recovery trigger limitations remain unchanged;
-this work does not claim to repair every Keystore failure mode.
+Wrapper authenticated data binds its purpose, format, Secret ID, KDF and slot ID.
+Payload authenticated data also binds the full ordered slot list. After decrypting,
+the registry must match the slots and contain exactly one default entry. All slot
+changes reseal the payload with a fresh IV. No separate fast password hash is
+stored; the authenticated unwrap determines the matching slot.
 
-Mnemonic/social recovery/BIP85 outputs do not include the application verifier
-registry. Preserve the mnemonic, actual Pi values and account configuration for
-independent wallet restoration. A password hash cannot recover a forgotten Pi.
-Removing a Pi registration removes local access/configuration, not chain assets.
+Passwords use exact UTF-8, without trimming or Unicode normalization. Unpaired
+UTF-16 surrogates are rejected. The limit is 1024 UTF-8 bytes and 32 registered
+passwords including D. Protocol-specific normalization rules still apply when
+turning Pi into a wallet. Different raw Pi strings may yield the same addresses
+for protocols that normalize them.
 
-This new project does not automatically migrate old-format Secrets. Existing
-records are preserved without deriving or exposing them through the new flow.
-An existing mnemonic cannot be silently re-imported over the old record. Back up
-legacy data using the original application before moving to a fresh installation.
+Runtime and trust boundaries
+Only the current Pi, its accounts and DEK are held while open. D is not retained
+as a BIP39 passphrase. The DEK and passwords are not placed in route state, NgRx,
+public metadata, or logs. Locking invalidates the operation epoch before delayed
+crypto, derivation or UI results can publish a context. JavaScript strings,
+CryptoKey objects and engine copies cannot be guaranteed to be physically erased.
+
+Signing and root-secret exports continue to read native storage, so native
+system-authentication policy still applies. The already-unwrapped DEK removes
+the need for another wallet password. Management mutations are serialized and
+write a single encrypted record. iOS updates use Keychain SecItemUpdate. The
+existing Android file writer is not crash-atomic; no power-loss durability claim
+is made for that backend.
+
+All slots protect the SAME entropy. Any registered Pi can cryptographically
+unwrap that entropy; a modified client could therefore derive the empty-passphrase
+wallet too. D-only management is a trusted-client authorization rule, not secret
+isolation between people who know different Pi values. The weakest registered
+password limits the password protection of that common entropy.
+
+Recovery
+Android RecoveryKey saves the encrypted envelope as a point-in-time snapshot.
+Recovery still requires a D/Pi valid for that snapshot; the recovery code cannot
+replace a forgotten wallet password. Credential/account changes mark the recovery
+snapshot outdated. Old snapshots can restore previous passwords and accounts;
+removing a slot cannot revoke copies of old snapshots or already disclosed keys.
+Original native recovery-trigger limitations remain unchanged.
+
+Mnemonic/social recovery/BIP85 outputs do not include the envelope, registry or
+account templates. Preserve the mnemonic, actual Pi values and account paths
+for independent restoration. No hash or key slot can recover a forgotten Pi.
+Removing a Pi registration affects local access/configuration, not chain assets.
 
 Validation
-Run the new behavior and boundary tests from airgap-vault:
   node --test tests/*.test.cjs
-They execute application TypeScript and real ETH/BTC/DOT crypto libraries with
-mocked native storage and Angular/UI boundaries. They do not replace device tests.
-Type/template checking:
+Tests run actual Web Crypto and ETH/BTC/DOT libraries with native/UI boundaries
+mocked. Crypto tests include independent Node PBKDF2/AES-GCM interoperability,
+wrong passwords, authentication tampering, limits, fresh IVs and slot operations.
   node node_modules/@angular/compiler-cli/bundles/src/bin/ngc.js --project src/tsconfig.app.json --noEmit
-Production web assets for the native shell:
   node --max-old-space-size=8192 node_modules/@angular/cli/bin/ng build --configuration production
 
-Native biometric dialogs, genuine background events, Keychain/Keystore recovery,
-and external BTC PSBT/MetaMask integrations still require device validation.
+Native biometric dialogs, genuine background events, Android recovery and external
+BTC PSBT/MetaMask integrations require device validation.
+
+Sources
+https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html
+https://cheatsheetseries.owasp.org/cheatsheets/Cryptographic_Storage_Cheat_Sheet.html
+https://www.w3.org/TR/2017/REC-WebCryptoAPI-20170126/

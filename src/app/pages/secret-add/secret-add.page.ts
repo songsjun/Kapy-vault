@@ -116,13 +116,6 @@ export class SecretAddPage {
     this.ionViewDidLeave()
   }
 
-  public async togglePasscode(): Promise<void> {
-    if (this.saving) {
-      return
-    }
-    this.secret.isParanoia = !this.secret.isParanoia
-  }
-
   private async showErrorAlert() {
     const alert = await this.uiEventService.getTranslatedAlert({
       header: 'secret-edit.error_alert.title',

@@ -4,11 +4,14 @@ import { AirGapWallet, AirGapWalletStatus, ProtocolSymbols } from '@airgap/coinl
 import { BIP32Factory } from '@airgap/coinlib-core/dependencies/src/bip32-5.0.1/src/index'
 import * as ecc from '@airgap/coinlib-core/dependencies/src/@bitcoinerlab/secp256k1-1.2.0/src/index'
 import { randomBytes } from '@airgap/coinlib-core/dependencies/src/@noble/hashes-1.8.0/src/utils'
-import { pbkdf2 } from '@airgap/coinlib-core/dependencies/src/pbkdf2-3.1.3/browser'
 import { entropyToMnemonic, mnemonicToSeed } from 'bip39'
 import { BehaviorSubject, Observable } from 'rxjs'
 import { MnemonicSecret } from '../../models/secret'
 import { SecureStorageService } from '../secure-storage/secure-storage.service'
+import {
+  WalletSecretEnvelope, createEnvelope, openEnvelope, addKeySlot, removeKeySlot,
+  replaceKeySlot, encryptPayload, decryptPayload, parseEnvelope
+} from './wallet-secret-crypto'
 
 export interface WalletAccountConfig {
   id: string
@@ -20,29 +23,20 @@ export interface WalletAccountConfig {
   addressIndex?: number
 }
 
-interface PasswordVerifier {
-  algorithm: 'pbkdf2-sha512'
-  iterations: 2048
-  encoding: 'raw-utf8-v1'
-  salt: string
-  hash: string
-}
-
 interface WalletPassphrase {
   id: string
   isDefault: boolean
-  verifier: PasswordVerifier
   accounts: WalletAccountConfig[]
 }
 
 interface WalletAccessRegistry {
-  version: 1
+  version: 2
   secretId: string
   entries: WalletPassphrase[]
 }
 
 interface StoredWalletSecret {
-  format: 'airgap-wallet-access-v1'
+  format: 'airgap-wallet-data-v2'
   secretId: string
   entropy: string
   registry: WalletAccessRegistry
@@ -67,6 +61,8 @@ export class WalletAccessService {
     registry: WalletAccessRegistry
     context: WalletAccessContext
     passphrase: string
+    key: Uint8Array
+    envelope: WalletSecretEnvelope
   }
   private readonly subject = new BehaviorSubject<WalletAccessContext | undefined>(undefined)
   public readonly changes$: Observable<WalletAccessContext | undefined> = this.subject.asObservable()
@@ -78,7 +74,13 @@ export class WalletAccessService {
   public setMetadataWriter(writer: () => Promise<void>): void { this.metadataWriter = writer }
 
   public isConfigured(secret: MnemonicSecret): boolean {
-    return secret?.walletAccessVersion === 1
+    return secret?.walletAccessVersion === 2
+  }
+
+  public getStorageLocation(secret: MnemonicSecret): { alias: string; key: string; isParanoia: false } {
+    // iOS item accounts are not namespaced by the native key alias.
+    const key = 'wallet-v2-' + secret.id
+    return { alias: key, key, isParanoia: false }
   }
 
   public async setup(secret: MnemonicSecret, defaultPassword: string): Promise<void> {
@@ -88,14 +90,14 @@ export class WalletAccessService {
       throw new Error('Wallet password is already configured')
     }
     const registry: WalletAccessRegistry = {
-      version: 1,
+      version: 2,
       secretId: secret.id,
-      entries: [{ id: this.newId(), isDefault: true, verifier: await this.makeVerifier(defaultPassword), accounts: [] }]
+      entries: [{ id: this.newId(), isDefault: true, accounts: [] }]
     }
+    await this.writeRegistry(secret, registry, defaultPassword, epoch)
     this.assertOperation(epoch)
-    await this.writeRegistry(secret, registry, epoch)
-    this.assertOperation(epoch)
-    secret.walletAccessVersion = 1
+    secret.isParanoia = false
+    secret.walletAccessVersion = 2
   }
 
   public async unlock(secret: MnemonicSecret, password: string): Promise<void> {
@@ -105,31 +107,35 @@ export class WalletAccessService {
     if (!this.isConfigured(secret)) {
       throw new Error('This Secret needs to be re-imported with a default wallet password')
     }
-    const stored = await this.readStoredSecret(secret)
-    const registry = stored.registry
+    // A native write already in flight cannot be cancelled by an epoch change.
+    // Drain it before reading, so a new session cannot cache and later restore
+    // an older key-slot list over the completed write.
+    await this.mutationTail
     this.assertOperation(epoch)
-    let entry: WalletPassphrase | undefined
-    for (const candidate of registry.entries) {
-      if (await this.matches(password, candidate.verifier)) {
-        entry = candidate
-      }
+    const envelope = await this.readEnvelope(secret)
+    this.assertOperation(epoch)
+    const opened = await openEnvelope(envelope, password)
+    let retained = false
+    try {
       this.assertOperation(epoch)
-    }
-    if (!entry) {
-      throw new Error('Incorrect wallet password')
-    }
-    const passphrase = entry.isDefault ? '' : password
-    const wallets: AirGapWallet[] = []
-    if (entry.accounts.length > 0) {
+      const stored = this.parseStoredSecret(opened.plaintext, secret, envelope)
+      const registry = stored.registry
+      const entry = registry.entries.find((candidate) => candidate.id === opened.profileId)
+      if (!entry) { throw new Error('Invalid wallet password registry') }
+      const passphrase = entry.isDefault ? '' : password
+      const wallets: AirGapWallet[] = []
       for (const config of entry.accounts) {
         wallets.push(await this.deriveWallet(stored.entropy, passphrase, config))
         this.assertOperation(epoch)
       }
+      const context: WalletAccessContext = { secretId: secret.id, profileId: entry.id, isDefault: entry.isDefault, epoch, wallets }
+      this.current = { secret, registry, context, passphrase, key: opened.key, envelope }
+      retained = true
+      secret.wallets = wallets
+      this.subject.next(context)
+    } finally {
+      if (!retained) { opened.key.fill(0) }
     }
-    const context: WalletAccessContext = { secretId: secret.id, profileId: entry.id, isDefault: entry.isDefault, epoch, wallets }
-    this.current = { secret, registry, context, passphrase }
-    secret.wallets = wallets
-    this.subject.next(context)
   }
 
   public lock(): void {
@@ -138,6 +144,7 @@ export class WalletAccessService {
       this.current.secret.wallets = []
       this.current.context.wallets.length = 0
       this.current.passphrase = ''
+      this.current.key.fill(0)
     }
     this.current = undefined
     this.subject.next(undefined)
@@ -220,10 +227,11 @@ export class WalletAccessService {
     if (registry.entries.length >= 32) {
       throw new Error('A Secret can contain at most 32 wallet passwords')
     }
-    await this.assertUniquePassword(password, registry)
+    const id = this.newId()
+    const envelope = await addKeySlot(this.current.envelope, this.current.key, id, password)
     this.assertContext(epoch)
-    registry.entries.push({ id: this.newId(), isDefault: false, verifier: await this.makeVerifier(password), accounts: [] })
-    await this.commitRegistry(secret, registry, epoch)
+    registry.entries.push({ id, isDefault: false, accounts: [] })
+    await this.commitRegistry(secret, registry, epoch, envelope)
   }
 
   public async removePassphrase(secret: MnemonicSecret, id: string): Promise<void> {
@@ -240,7 +248,8 @@ export class WalletAccessService {
       throw new Error('The default wallet password cannot be removed')
     }
     registry.entries = registry.entries.filter((candidate) => candidate.id !== id)
-    await this.commitRegistry(secret, registry, epoch)
+    const envelope = removeKeySlot(this.current.envelope, id)
+    await this.commitRegistry(secret, registry, epoch, envelope)
   }
 
   public async changeDefaultPassword(secret: MnemonicSecret, password: string): Promise<void> {
@@ -254,10 +263,9 @@ export class WalletAccessService {
     this.validatePassword(password)
     const registry = this.cloneRegistry()
     const entry = registry.entries.find((candidate) => candidate.isDefault)
-    await this.assertUniquePassword(password, registry, entry.id)
+    const envelope = await replaceKeySlot(this.current.envelope, this.current.key, entry.id, password)
     this.assertContext(epoch)
-    entry.verifier = await this.makeVerifier(password)
-    await this.commitRegistry(secret, registry, epoch)
+    await this.commitRegistry(secret, registry, epoch, envelope)
   }
 
   public async addAccounts(secret: MnemonicSecret, configs: Omit<WalletAccountConfig, 'id' | 'status'>[]): Promise<AirGapWallet[]> {
@@ -360,9 +368,10 @@ export class WalletAccessService {
   private async destroyImpl(secret: MnemonicSecret): Promise<void> {
     this.requireDefault(secret)
     const epoch = this.getContextId()
-    const store = await this.secureStorage.get(secret.id, secret.isParanoia)
+    const location = this.getStorageLocation(secret)
+    const store = await this.secureStorage.get(location.alias, location.isParanoia)
     this.assertContext(epoch)
-    await store.removeItem(secret.id)
+    await store.removeItem(location.key)
     this.assertContext(epoch)
     this.lock()
   }
@@ -407,34 +416,6 @@ export class WalletAccessService {
     }
   }
 
-  private async makeVerifier(password: string): Promise<PasswordVerifier> {
-    const salt = Buffer.from(randomBytes(16)).toString('hex')
-    return { algorithm: 'pbkdf2-sha512', iterations: 2048, encoding: 'raw-utf8-v1', salt, hash: await this.hash(password, salt) }
-  }
-
-  private hash(password: string, salt: string): Promise<string> {
-    // Existing PBKDF2/HMAC-SHA512 primitive and BIP39 iteration count, not a new wallet derivation.
-    return new Promise((resolve, reject) => pbkdf2(Buffer.from(password, 'utf8'), Buffer.from(salt, 'hex'), 2048, 32, 'sha512',
-      (error: Error | null, key: Buffer) => error ? reject(error) : resolve(key.toString('hex'))))
-  }
-
-  private async matches(password: string, verifier: PasswordVerifier): Promise<boolean> {
-    const actual = Buffer.from(await this.hash(password, verifier.salt), 'hex')
-    const expected = Buffer.from(verifier.hash, 'hex')
-    let difference = actual.length ^ expected.length
-    for (let i = 0; i < actual.length; i++) { difference |= actual[i] ^ expected[i] }
-    actual.fill(0)
-    return difference === 0
-  }
-
-  private async assertUniquePassword(password: string, registry: WalletAccessRegistry, exceptId?: string): Promise<void> {
-    for (const entry of registry.entries) {
-      if (entry.id !== exceptId && await this.matches(password, entry.verifier)) {
-        throw new Error('This wallet password is already registered')
-      }
-    }
-  }
-
   private newId(): string { return Buffer.from(randomBytes(16)).toString('hex') }
   private cloneRegistry(): WalletAccessRegistry { return JSON.parse(JSON.stringify(this.current.registry)) }
   private assertOperation(epoch: number): void {
@@ -443,77 +424,122 @@ export class WalletAccessService {
 
   public async readEntropy(secret: MnemonicSecret): Promise<string> {
     const epoch = this.requireUnlocked(secret).epoch
-    const stored = await this.readStoredSecret(secret)
+    // Keep the native authentication boundary for signing and root-secret
+    // exports. v2 uses system authentication, without a second wallet password.
+    const envelope = await this.readEnvelope(secret)
     this.assertContext(epoch)
-    return stored.entropy
+    const plaintext = await decryptPayload(envelope, this.current.key)
+    this.assertContext(epoch)
+    return this.parseStoredSecret(plaintext, secret, envelope).entropy
   }
 
   public async recoveryPayload(secret: MnemonicSecret): Promise<string> {
     this.requireDefault(secret)
-    const epoch = this.getContextId()
-    const stored = await this.readStoredSecret(secret)
-    this.assertContext(epoch)
-    return JSON.stringify(stored)
+    // Recovery never exports a plaintext Secret or a data-encryption key.
+    return JSON.stringify(this.current.envelope)
   }
 
-  private async writeRegistry(secret: MnemonicSecret, registry: WalletAccessRegistry, epoch: number): Promise<void> {
+  public async createRecoveryKey(secret: MnemonicSecret): Promise<string> {
+    const epoch = this.getContextId()
+    return this.mutate(epoch, async () => {
+      this.requireDefault(secret)
+      const location = this.getStorageLocation(secret)
+      const store = await this.secureStorage.get(location.alias, location.isParanoia)
+      this.assertContext(epoch)
+      const payload = await this.recoveryPayload(secret)
+      this.assertContext(epoch)
+      const result = await store.setupRecoveryPassword(location.key, payload)
+      this.assertContext(epoch)
+      secret.hasRecoveryKey = true
+      try {
+        await this.metadataWriter()
+        this.assertContext(epoch)
+      } catch (error) {
+        secret.hasRecoveryKey = false
+        throw error
+      }
+      return result.recoveryKey
+    })
+  }
+
+  private async writeRegistry(secret: MnemonicSecret, registry: WalletAccessRegistry, password: string, epoch: number): Promise<void> {
     if (!/^(?:[a-f0-9]{32}|[a-f0-9]{40}|[a-f0-9]{48}|[a-f0-9]{56}|[a-f0-9]{64})$/i.test(secret.secretHex)) {
       throw new Error('Invalid Secret entropy')
     }
-    const stored: StoredWalletSecret = { format: 'airgap-wallet-access-v1', secretId: secret.id, entropy: secret.secretHex, registry }
-    const store = await this.secureStorage.get(secret.id, secret.isParanoia)
-    this.assertOperation(epoch)
-    // One encrypted native item keeps entropy, verifiers, and account templates
-    // together, including the existing Android single-item recovery mechanism.
-    await store.setItem(secret.id, JSON.stringify(stored))
+    const stored: StoredWalletSecret = { format: 'airgap-wallet-data-v2', secretId: secret.id, entropy: secret.secretHex, registry }
+    const sealed = await createEnvelope(secret.id, registry.entries[0].id, password, JSON.stringify(stored))
+    try {
+      this.assertOperation(epoch)
+      const location = this.getStorageLocation(secret)
+      const store = await this.secureStorage.get(location.alias, location.isParanoia)
+      this.assertOperation(epoch)
+      // One native item keeps the encrypted Secret and all password key slots
+      // together, including Android's single-item recovery snapshot.
+      await store.setItem(location.key, JSON.stringify(sealed.envelope))
+      this.assertOperation(epoch)
+    } finally {
+      sealed.key.fill(0)
+    }
   }
 
-  private async commitRegistry(secret: MnemonicSecret, registry: WalletAccessRegistry, epoch: number): Promise<void> {
+  private async commitRegistry(secret: MnemonicSecret, registry: WalletAccessRegistry, epoch: number,
+      nextEnvelope?: WalletSecretEnvelope): Promise<void> {
     this.assertContext(epoch)
-    const store = await this.secureStorage.get(secret.id, secret.isParanoia)
-    this.assertContext(epoch)
-    const stored = this.parseStoredSecret((await store.getItem(secret.id)).value, secret)
+    const stored = await this.readOpenSecret(secret)
     this.assertContext(epoch)
     stored.registry = registry
-    await store.setItem(secret.id, JSON.stringify(stored))
+    const envelope = await encryptPayload(nextEnvelope ?? this.current.envelope, this.current.key, JSON.stringify(stored))
+    this.assertContext(epoch)
+    this.parseStoredSecret(JSON.stringify(stored), secret, envelope)
+    const location = this.getStorageLocation(secret)
+    const store = await this.secureStorage.get(location.alias, location.isParanoia)
+    this.assertContext(epoch)
+    await store.setItem(location.key, JSON.stringify(envelope))
     this.assertContext(epoch)
     this.current.registry = registry
+    this.current.envelope = envelope
     if (secret.hasRecoveryKey) {
-      // Android recovery is a static snapshot. Its old file still exists, but
-      // it no longer represents the current passwords and account templates.
       secret.hasRecoveryKey = false
       await this.metadataWriter()
       this.assertContext(epoch)
     }
   }
 
-  private async readStoredSecret(secret: MnemonicSecret): Promise<StoredWalletSecret> {
-    const store = await this.secureStorage.get(secret.id, secret.isParanoia)
-    return this.parseStoredSecret((await store.getItem(secret.id)).value, secret)
+  private async readEnvelope(secret: MnemonicSecret): Promise<WalletSecretEnvelope> {
+    const location = this.getStorageLocation(secret)
+    const store = await this.secureStorage.get(location.alias, location.isParanoia)
+    return parseEnvelope((await store.getItem(location.key)).value, secret.id)
   }
 
-  private parseStoredSecret(value: string, secret: MnemonicSecret): StoredWalletSecret {
+  private async readOpenSecret(secret: MnemonicSecret): Promise<StoredWalletSecret> {
+    const epoch = this.requireUnlocked(secret).epoch
+    const { envelope, key } = this.current
+    const plaintext = await decryptPayload(envelope, key)
+    this.assertContext(epoch)
+    return this.parseStoredSecret(plaintext, secret, envelope)
+  }
+
+  private parseStoredSecret(value: string, secret: MnemonicSecret, envelope: WalletSecretEnvelope): StoredWalletSecret {
     let stored: StoredWalletSecret
     try {
       stored = JSON.parse(value)
     } catch (_) {
       throw new Error('Invalid stored Secret. Restore from your mnemonic and passphrases')
     }
-    if (stored?.format !== 'airgap-wallet-access-v1' || stored.secretId !== secret.id ||
+    if (stored?.format !== 'airgap-wallet-data-v2' || stored.secretId !== secret.id ||
       typeof stored.entropy !== 'string' || !/^(?:[a-f0-9]{32}|[a-f0-9]{40}|[a-f0-9]{48}|[a-f0-9]{56}|[a-f0-9]{64})$/i.test(stored.entropy)) {
       throw new Error('Invalid stored Secret. Restore from your mnemonic and passphrases')
     }
     const registry = stored.registry
-    if (registry?.version !== 1 || registry.secretId !== secret.id || !Array.isArray(registry.entries) ||
-      registry.entries.length < 1 || registry.entries.length > 32 || registry.entries.filter((entry) => entry.isDefault === true).length !== 1 ||
+    if (registry?.version !== 2 || registry.secretId !== secret.id || !Array.isArray(registry.entries) ||
+      registry.entries.length !== envelope.slots.length || registry.entries.length < 1 || registry.entries.length > 32 ||
+      registry.entries.filter((entry) => entry.isDefault === true).length !== 1 ||
       new Set(registry.entries.map((entry) => entry.id)).size !== registry.entries.length) {
       throw new Error('Invalid wallet password registry')
     }
     for (const entry of registry.entries) {
-      const verifier = entry.verifier
       if (!/^[a-f0-9]{32}$/.test(entry.id) || typeof entry.isDefault !== 'boolean' || !Array.isArray(entry.accounts) ||
-        verifier?.algorithm !== 'pbkdf2-sha512' || verifier.iterations !== 2048 || verifier.encoding !== 'raw-utf8-v1' ||
-        !/^[a-f0-9]{32}$/.test(verifier.salt) || !/^[a-f0-9]{64}$/.test(verifier.hash)) {
+        !envelope.slots.some((slot) => slot.id === entry.id)) {
         throw new Error('Invalid wallet password registry')
       }
       for (const config of entry.accounts) {

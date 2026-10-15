@@ -67,7 +67,7 @@ export class SecretsService {
   private readonly secrets$: ReplaySubject<MnemonicSecret[]> = new ReplaySubject(1)
 
   constructor(
-    private readonly secureStorageService: SecureStorageService,
+    _secureStorageService: SecureStorageService,
     private readonly storageService: VaultStorageService,
     _protocolService: ProtocolService,
     _navigationService: NavigationService,
@@ -174,18 +174,7 @@ export class SecretsService {
   }
 
   public async resetRecoveryPassword(secret: MnemonicSecret): Promise<string> {
-    this.walletAccess.requireDefault(secret)
-    const epoch = this.walletAccess.getContextId()
-    const secureStorage = await this.secureStorageService.get(secret.id, secret.isParanoia)
-    this.walletAccess.assertContext(epoch)
-    const payload = await this.walletAccess.recoveryPayload(secret)
-    this.walletAccess.assertContext(epoch)
-    const result = await secureStorage.setupRecoveryPassword(secret.id, payload)
-    this.walletAccess.assertContext(epoch)
-    secret.hasRecoveryKey = true
-    await this.addOrUpdateSecret(secret)
-    this.walletAccess.assertContext(epoch)
-    return result.recoveryKey
+    return this.walletAccess.createRecoveryKey(secret)
   }
 
   public async retrieveEntropyForSecret(secret: MnemonicSecret): Promise<string> {

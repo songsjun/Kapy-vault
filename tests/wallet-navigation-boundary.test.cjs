@@ -36,7 +36,7 @@ function fixture() {
   let currentSecret
   const access = {
     changes$: subject.asObservable(),
-    isConfigured: (secret) => secret?.walletAccessVersion === 1,
+    isConfigured: (secret) => secret?.walletAccessVersion === 2,
     isUnlocked: (secret) => !!current && (!secret || secret.id === current.secretId),
     requireUnlocked(secret) { if (!this.isUnlocked(secret)) throw Error('locked'); return current },
     requireDefault(secret) { if (!this.requireUnlocked(secret).isDefault) throw Error('default required') },
@@ -61,7 +61,7 @@ function fixture() {
   const navigation = new NavigationService(router, { back() {} }, navCtrl, access)
   return { access, router, navigation, rootCalls, navCtrl }
 }
-const secret = { id: 'saved-secret', walletAccessVersion: 1 }
+const secret = { id: 'saved-secret', walletAccessVersion: 2 }
 const draft = () => ({ id: 'fresh-secret', secretHex: '00000000000000000000000000000000' })
 
 test('URLs and missing state never authorize protected pages', async () => {
@@ -462,9 +462,10 @@ test('BIP85 reads entropy through the actual single-item SecretsService and pres
   const service = new SecretsService(secure, { async get() { return [] }, async set() {} }, {}, {}, {}, {}, {}, access)
   const secret = new MnemonicSecret('00000000000000000000000000000000', 'Public BIP85 fixture')
   await service.createSecret(secret, 'PUBLIC-DEFAULT-GATE')
-  const item = JSON.parse(items.get(secret.id + ':' + secret.id))
-  assert.equal(item.format, 'airgap-wallet-access-v1')
-  assert.equal(item.entropy, '00000000000000000000000000000000')
+  const location = access.getStorageLocation(secret)
+  const item = JSON.parse(items.get(location.alias + ':' + location.key))
+  assert.equal(item.format, 'airgap-wallet-access-v2')
+  assert.equal(item.entropy, undefined)
   const epoch = access.getContextId()
   const page = Object.create(Bip85ShowPage.prototype)
   Object.assign(page, {

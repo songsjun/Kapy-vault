@@ -304,9 +304,10 @@ export class SecretEditPage {
   }
 
   public async resetRecoveryPassword(): Promise<void> {
-    if (!this.canManage) {
+    if (!this.canManage || this.accessBusy) {
       return
     }
+    this.accessBusy = true
     try {
       const recoveryKey = await this.secretsService.resetRecoveryPassword(this.secret)
       if (this.active && this.canManage) {
@@ -314,6 +315,8 @@ export class SecretEditPage {
       }
     } catch (e) {
       this.showToast('secret-edit.secret-recovery-key.reset-error')
+    } finally {
+      this.accessBusy = false
     }
   }
 
