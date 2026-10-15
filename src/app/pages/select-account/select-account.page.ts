@@ -1,64 +1,47 @@
-import { flattened } from '@airgap/angular-core'
 import { AirGapWallet, AirGapWalletStatus, MainProtocolSymbols } from '@airgap/coinlib-core'
 import { Component } from '@angular/core'
 import { ModalController, NavParams } from '@ionic/angular'
 import { TranslateService } from '@ngx-translate/core'
+import { WalletAccessService } from '../../services/wallet-access/wallet-access.service'
 
-import { MnemonicSecret } from '../../models/secret'
-import { SecretsService } from '../../services/secrets/secrets.service'
-
-@Component({
-  selector: 'airgap-select-account',
-  templateUrl: './select-account.page.html',
-  styleUrls: ['./select-account.page.scss']
-})
+@Component({ selector: 'airgap-select-account', templateUrl: './select-account.page.html', styleUrls: ['./select-account.page.scss'] })
 export class SelectAccountPage {
   public title: string
   public heading: string
   public placeholder: string
-
-  public wallets: AirGapWallet[]
+  public wallets: AirGapWallet[] = []
   public symbolFilter: MainProtocolSymbols | undefined
+  private contextId: number
 
   constructor(
-    private readonly secretsService: SecretsService,
+    private readonly access: WalletAccessService,
     private readonly translateService: TranslateService,
     private readonly navParams: NavParams,
     private readonly modalController: ModalController
   ) {}
 
   public async ngOnInit(): Promise<void> {
-    const type = this.navParams.get('type')
+    this.contextId = this.access.getContextId()
+    const type = this.navParams.get('type') === 'message-account' ? 'message-signing' : this.navParams.get('type')
     this.title = this.translateService.instant(`select-account.${type}.title`)
     this.heading = this.translateService.instant(`select-account.${type}.heading`)
     this.placeholder = this.translateService.instant(`select-account.${type}.placeholder`)
-
-    this.secretsService.getSecretsObservable().subscribe(async (secrets: MnemonicSecret[]) => {
-      const wallets: (AirGapWallet | undefined)[][] = await Promise.all(
-        secrets.map((secret) =>
-          Promise.all(
-            secret.wallets.map(async (wallet: AirGapWallet) => {
-              wallet.label = secret.label
-              return wallet.status === AirGapWalletStatus.ACTIVE &&
-                (!this.symbolFilter || (await wallet.protocol.getIdentifier()) === this.symbolFilter)
-                ? wallet
-                : undefined
-            })
-          )
-        )
-      )
-
-      this.wallets = flattened(wallets).filter((wallet: AirGapWallet | undefined) => wallet !== undefined)
-    })
+    this.symbolFilter = this.navParams.get('symbolFilter') ?? this.symbolFilter
+    const candidates = await Promise.all(this.access.getWallets().map(async (wallet) => {
+      const identifier = await wallet.protocol.getIdentifier()
+      return wallet.status === AirGapWalletStatus.ACTIVE &&
+        (!this.symbolFilter || identifier === this.symbolFilter || this.symbolFilter.startsWith(identifier)) ? wallet : undefined
+    }))
+    this.access.assertContext(this.contextId)
+    this.wallets = candidates.filter((wallet) => wallet !== undefined)
   }
 
-  public async setWallet(wallet: AirGapWallet) {
-    this.modalController
-      .dismiss(this.navParams.get('type') === 'message-signing' ? await wallet.protocol.getIdentifier() : wallet) // TODO: change to always return wallet, but it will require a change wherever the "message-signing" is used
-      .catch((err) => console.error(err))
+  public async setWallet(wallet: AirGapWallet): Promise<void> {
+    this.access.assertContext(this.contextId)
+    this.access.assertWallet(wallet)
+    // Every caller receives the selected account, never an unbound protocol name.
+    await this.modalController.dismiss(wallet)
   }
 
-  public async dismiss() {
-    this.modalController.dismiss().catch((err) => console.error(err))
-  }
+  public async dismiss(): Promise<void> { await this.modalController.dismiss() }
 }

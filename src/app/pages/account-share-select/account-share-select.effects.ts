@@ -3,12 +3,13 @@ import { Injectable } from '@angular/core'
 import { Actions, createEffect, ofType } from '@ngrx/effects'
 import { Action, Store } from '@ngrx/store'
 import { from, of } from 'rxjs'
-import { filter, first, switchMap, tap, withLatestFrom } from 'rxjs/operators'
+import { catchError, filter, first, switchMap, tap, withLatestFrom } from 'rxjs/operators'
 
 import { MnemonicSecret } from '../../models/secret'
 import { InteractionOperationType, InteractionService } from '../../services/interaction/interaction.service'
 import { MigrationService } from '../../services/migration/migration.service'
 import { SecretsService } from '../../services/secrets/secrets.service'
+import { WalletAccessService } from '../../services/wallet-access/wallet-access.service'
 import { ShareUrlService } from '../../services/share-url/share-url.service'
 
 import * as actions from './account-share-select.actions'
@@ -19,8 +20,13 @@ export class AccountShareSelectEffects {
   public secrets$ = createEffect(() =>
     this.actions$.pipe(
       ofType(actions.viewInitialization),
-      withLatestFrom(this.secretsService.getSecretsObservable()),
-      switchMap(([_, secrets]) => of(actions.initialDataLoaded({ secrets })))
+      switchMap(() => {
+        const secret = this.access.getCurrentSecret()
+        if (!secret) return of(actions.initialDataLoaded({ secrets: [] }))
+        const current = MnemonicSecret.init(secret)
+        current.wallets = this.access.getWallets(secret)
+        return of(actions.initialDataLoaded({ secrets: [current] }))
+      })
     )
   )
 
@@ -29,7 +35,7 @@ export class AccountShareSelectEffects {
       ofType(actions.syncButtonClicked),
       withLatestFrom(this.store.select(fromAccountShareSelect.selectCheckedSecrets)),
       filter(([_, checkedSecrets]) => checkedSecrets.length > 0),
-      switchMap(([_, checkedSecrets]) => from(this.generateShareUrl(checkedSecrets)).pipe(first()))
+      switchMap(([_, checkedSecrets]) => from(this.generateShareUrl(checkedSecrets)).pipe(first(), catchError(() => of(actions.viewInitialization()))))
     )
   )
 
@@ -38,7 +44,7 @@ export class AccountShareSelectEffects {
       this.actions$.pipe(
         ofType(actions.shareUrlGenerated, actions.migrationAlertAccepted),
         tap((action) => {
-          this.syncAccounts(action.shareUrl)
+          try { this.syncAccounts(action.shareUrl, action.contextId) } catch { /* Discard an expired profile export. */ }
         })
       ),
     { dispatch: false }
@@ -47,28 +53,26 @@ export class AccountShareSelectEffects {
   constructor(
     private readonly actions$: Actions,
     private readonly store: Store<fromAccountShareSelect.State>,
-    private readonly secretsService: SecretsService,
+    _secretsService: SecretsService,
     private readonly shareUrlService: ShareUrlService,
     private readonly interactionService: InteractionService,
-    private readonly migrationService: MigrationService
+    _migrationService: MigrationService,
+    private readonly access: WalletAccessService
   ) {}
 
   private async generateShareUrl(secrets: MnemonicSecret[]): Promise<Action> {
-    await this.migrationService.runSecretsMigration(secrets)
-    const [migratedSecrets, allMigrated]: [MnemonicSecret[], boolean] = await this.migrationService.deepFilterMigratedSecretsAndWallets(secrets)
-    if (migratedSecrets.length === 0) {
-      return actions.walletsNotMigrated()
-    }
-
-    const shareUrl: IACMessageDefinitionObjectV3[] = await this.shareUrlService.generateShareSecretsURL(migratedSecrets)
-
-    return allMigrated ? actions.shareUrlGenerated({ shareUrl }) : actions.shareUrlGeneratedExcludedLegacy({ shareUrl })
+    const contextId = this.access.getContextId()
+    const shareUrl = await this.shareUrlService.generateShareSecretsURL(secrets)
+    this.access.assertContext(contextId)
+    return actions.shareUrlGenerated({ shareUrl, contextId })
   }
 
-  private syncAccounts(shareUrl: IACMessageDefinitionObjectV3[]): void {
+  private syncAccounts(shareUrl: IACMessageDefinitionObjectV3[], contextId: number): void {
+    this.access.assertContext(contextId)
     this.interactionService.startInteraction({
+      contextId,
       operationType: InteractionOperationType.WALLET_SYNC,
       iacMessage: shareUrl
-    })
+    }).catch(() => undefined)
   }
 }

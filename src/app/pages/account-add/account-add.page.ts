@@ -1,5 +1,5 @@
 import { Component } from '@angular/core'
-import { ModalController, AlertController } from '@ionic/angular'
+import { ModalController } from '@ionic/angular'
 import { ICoinProtocol, ProtocolSymbols } from '@airgap/coinlib-core'
 
 import { ErrorCategory, handleErrorLocal } from '../../services/error-handler/error-handler.service'
@@ -7,11 +7,11 @@ import { NavigationService } from '../../services/navigation/navigation.service'
 import { SecretsService } from '../../services/secrets/secrets.service'
 import { AdvancedModeType, VaultStorageKey, VaultStorageService } from '../../services/storage/storage.service'
 import { LocalAuthenticationOnboardingPage } from '../local-authentication-onboarding/local-authentication-onboarding.page'
-import { BIP39_PASSPHRASE_ENABLED } from 'src/app/constants/constants'
 import { ProtocolService } from '@airgap/angular-core'
 import { MnemonicSecret } from 'src/app/models/secret'
-import { Observable } from 'rxjs'
+import { Observable, Subscription } from 'rxjs'
 import { map } from 'rxjs/operators'
+import { WalletAccessService } from '../../services/wallet-access/wallet-access.service'
 
 interface ProtocolWrapper {
   protocol: ICoinProtocol
@@ -43,9 +43,15 @@ export class AccountAddPage {
   singleSelectedProtocol: ProtocolWrapper | undefined
 
   public isAdvancedMode: boolean = false
-  public isBip39PassphraseEnabled: boolean = BIP39_PASSPHRASE_ENABLED
-  public revealBip39Passphrase: boolean = false
-  public bip39Passphrase: string = ''
+  public adding: boolean = false
+  private active: boolean = false
+  private revision: number = 0
+  private selectionRevision: number = 0
+  private readonly accessSubscription: Subscription
+
+  public get canAdd(): boolean {
+    return this.active && !!this.secret && this.walletAccess.isUnlocked(this.secret)
+  }
 
   public isAppAdvancedMode$: Observable<boolean> = this.storageService
     .subscribe(VaultStorageKey.ADVANCED_MODE_TYPE)
@@ -57,18 +63,56 @@ export class AccountAddPage {
     private readonly protocolService: ProtocolService,
     private readonly modalController: ModalController,
     private readonly navigationService: NavigationService,
-    private readonly alertController: AlertController
+    public readonly walletAccess: WalletAccessService
   ) {
     const state = this.navigationService.getState()
-    this.secret = state.secret
+    this.secret = state?.secret
+    this.accessSubscription = this.walletAccess.changes$.subscribe(() => {
+      if (this.active && !this.canAdd) {
+        this.denyAccess()
+      }
+    })
+  }
+
+  private denyAccess(): void {
+    this.active = false
+    this.revision++
+    this.formValid = false
+    this.protocolList = []
+    this.singleSelectedProtocol = undefined
+    this.navigationService.routeToSecretsTab().catch(handleErrorLocal(ErrorCategory.IONIC_NAVIGATION))
+  }
+
+  public ionViewDidLeave(): void {
+    this.active = false
+    this.revision++
+    this.formValid = false
+    this.protocolList = []
+    this.singleSelectedProtocol = undefined
+  }
+
+  public ngOnDestroy(): void {
+    this.ionViewDidLeave()
+    this.accessSubscription.unsubscribe()
   }
 
   public ionViewWillEnter(): void {
+    this.active = true
     const state = this.navigationService.getState()
+    const currentSecret = this.walletAccess.getCurrentSecret()
+    if (!state?.secret || !currentSecret || state.secret.id !== currentSecret.id || !this.walletAccess.isUnlocked(currentSecret)) {
+      this.denyAccess()
+      return
+    }
+    this.secret = currentSecret
+    const revision = ++this.revision
     this.protocolService.getActiveProtocols().then(async (protocols: ICoinProtocol[]) => {
+      if (!this.canAdd || revision !== this.revision) {
+        return
+      }
       const navigationIdentifier: ProtocolSymbols | undefined = state.protocol
 
-      this.protocolList = await Promise.all(
+      const protocolList = await Promise.all(
         protocols.map(async (protocol) => {
           const [symbol, identifier, name, supportsHD] = await Promise.all([
             protocol.getSymbol(),
@@ -87,163 +131,136 @@ export class AccountAddPage {
           }
         })
       )
-      this.onProtocolSelected()
-    })
+      if (this.canAdd && revision === this.revision) {
+        this.protocolList = protocolList
+        this.onProtocolSelected()
+      }
+    }).catch(handleErrorLocal(ErrorCategory.SECURE_STORAGE))
   }
 
   public onProtocolSelected(): void {
-    // Wait 1 tick so "isChecked" is updated
-    setTimeout(async () => {
-      const selectedProtocols = this.protocolList.filter((protocol) => protocol.isChecked)
-      if (selectedProtocols.length === 0) {
-        this.formValid = false
-      } else {
-        this.formValid = true
-      }
-
-      if (this.isAdvancedMode) {
-        // Advanced mode: reset to standard path and native HD capability so user can edit manually
-        await Promise.all(
-          selectedProtocols.map(async (wrapper) => {
-            wrapper.customDerivationPath = undefined
-            wrapper.isHDWallet = await wrapper.protocol.getSupportsHD()
-          })
-        )
-        if (selectedProtocols.length === 1) {
-          this.singleSelectedProtocol = selectedProtocols[0]
-          this.singleSelectedProtocol.customDerivationPath = await this.singleSelectedProtocol.protocol.getStandardDerivationPath()
-        } else {
-          this.singleSelectedProtocol = undefined
+    if (!this.canAdd) {
+      return
+    }
+    const revision = this.revision
+    const selectionRevision = ++this.selectionRevision
+    this.formValid = false
+    // Ionic updates the checkbox value after its click handler.
+    setTimeout(() => {
+      this.prepareSelectedProtocols(revision, selectionRevision).catch((error) => {
+        if (this.canAdd) {
+          handleErrorLocal(ErrorCategory.SECURE_STORAGE)(error)
         }
-      } else {
-        // Non-advanced mode: auto-bump to next available derivation path
-        await Promise.all(
-          selectedProtocols.map(async (wrapper) => {
-            const nextPath = await this.secretsService.getNextDerivationPathForProtocol(wrapper.protocol, this.secret)
-            wrapper.customDerivationPath = nextPath.derivationPath
-            wrapper.isHDWallet = nextPath.isHDWallet
-          })
-        )
-
-        if (selectedProtocols.length === 1) {
-          this.singleSelectedProtocol = selectedProtocols[0]
-        } else {
-          this.singleSelectedProtocol = undefined
-        }
-      }
+      })
     }, 0)
   }
 
-  public async toggleHDWallet() {
-    // "isHDWallet" can only be toggled if one protocol is checked
-    const selectedProtocols = this.protocolList.filter((protocol) => protocol.isChecked)
-    if (selectedProtocols.length === 1) {
-      const selectedProtocol = selectedProtocols[0]
-      const standardDerivationPath = await selectedProtocol.protocol.getStandardDerivationPath()
-      if ((await selectedProtocol.protocol.getSupportsHD()) && selectedProtocol.isHDWallet) {
-        selectedProtocol.customDerivationPath = standardDerivationPath
-      } else {
-        selectedProtocol.customDerivationPath = `${standardDerivationPath}/0/0`
-      }
-      this.singleSelectedProtocol = selectedProtocol
-    } else {
-      this.singleSelectedProtocol = undefined
+  private async prepareSelectedProtocols(revision: number, selectionRevision: number): Promise<void> {
+    if (!this.canAdd || revision !== this.revision || selectionRevision !== this.selectionRevision) {
+      return
     }
+    const selected = this.protocolList.filter((protocol) => protocol.isChecked)
+    const advanced = this.isAdvancedMode
+    const prepared = await Promise.all(selected.map(async (wrapper) => {
+      const next = advanced
+        ? {
+            derivationPath: selected.length === 1 ? await wrapper.protocol.getStandardDerivationPath() : undefined,
+            isHDWallet: await wrapper.protocol.getSupportsHD()
+          }
+        : await this.secretsService.getNextDerivationPathForProtocol(wrapper.protocol, this.secret)
+      return { wrapper, next }
+    }))
+    if (!this.canAdd || revision !== this.revision || selectionRevision !== this.selectionRevision) {
+      return
+    }
+    for (const { wrapper, next } of prepared) {
+      wrapper.customDerivationPath = next.derivationPath
+      wrapper.isHDWallet = next.isHDWallet
+    }
+    this.singleSelectedProtocol = selected.length === 1 ? selected[0] : undefined
+    this.formValid = selected.length > 0
+  }
+
+  public async toggleHDWallet(): Promise<void> {
+    if (!this.canAdd) {
+      return
+    }
+    const revision = this.revision
+    const selectionRevision = ++this.selectionRevision
+    const selected = this.protocolList.filter((protocol) => protocol.isChecked)
+    if (selected.length !== 1) {
+      this.singleSelectedProtocol = undefined
+      return
+    }
+    const wrapper = selected[0]
+    const [path, supportsHD] = await Promise.all([wrapper.protocol.getStandardDerivationPath(), wrapper.protocol.getSupportsHD()])
+    if (!this.canAdd || revision !== this.revision || selectionRevision !== this.selectionRevision) {
+      return
+    }
+    wrapper.customDerivationPath = supportsHD && wrapper.isHDWallet ? path : `${path}/0/0`
+    this.singleSelectedProtocol = wrapper
   }
 
   public async addWallet(): Promise<void> {
+    if (!this.canAdd || !this.formValid || this.adding) {
+      return
+    }
     const value: boolean = await this.storageService.get(VaultStorageKey.DISCLAIMER_HIDE_LOCAL_AUTH_ONBOARDING)
+    if (!this.canAdd) {
+      return
+    }
     if (!value) {
-      const modal: HTMLIonModalElement = await this.modalController.create({
-        component: LocalAuthenticationOnboardingPage
-      })
-
-      modal
-        .onDidDismiss()
-        .then(() => {
-          this.addWalletAndReturnToAddressPage()
-        })
-        .catch(handleErrorLocal(ErrorCategory.IONIC_MODAL))
-
-      modal.present().catch(handleErrorLocal(ErrorCategory.IONIC_MODAL))
+      const modal: HTMLIonModalElement = await this.modalController.create({ component: LocalAuthenticationOnboardingPage })
+      modal.onDidDismiss().then(() => {
+        if (this.canAdd) {
+          this.addWalletAndReturnToAddressPage().catch(handleErrorLocal(ErrorCategory.SECURE_STORAGE))
+        }
+      }).catch(handleErrorLocal(ErrorCategory.IONIC_MODAL))
+      if (this.canAdd) {
+        await modal.present()
+      }
     } else {
-      this.addWalletAndReturnToAddressPage()
+      await this.addWalletAndReturnToAddressPage()
     }
   }
 
   private async addWalletAndReturnToAddressPage(): Promise<void> {
-    const addAccount = async () => {
-      const selectedProtocols = this.protocolList.filter((p) => p.isChecked)
-
-      this.secretsService
-        .addWallets(
-          this.secret,
-          await Promise.all(
-            selectedProtocols.map(async (protocolWrapper: ProtocolWrapper) => {
-              const protocol = protocolWrapper.protocol
-              return {
-                protocolIdentifier: await protocol.getIdentifier(),
-                isHDWallet: protocolWrapper.isHDWallet,
-                customDerivationPath: protocolWrapper.customDerivationPath ?? (await protocol.getStandardDerivationPath()),
-                bip39Passphrase: this.bip39Passphrase,
-                isActive: true
-              }
-            })
-          )
-        )
-        .then((createdWallets) => {
-          if (createdWallets.length === 1) {
-            // Navigate directly to the new account's detail page
-            this.navigationService
-              .routeWithState('/account-address', { wallet: createdWallets[0], secret: this.secret }, { replaceUrl: true })
-              .catch(handleErrorLocal(ErrorCategory.IONIC_NAVIGATION))
-          } else {
-            // Multiple wallets or no wallets created, go to accounts list
-            this.navigationService
-              .routeWithState('/accounts-list', { secret: this.secret }, { replaceUrl: true })
-              .catch(handleErrorLocal(ErrorCategory.IONIC_NAVIGATION))
-          }
-        })
-        .catch(handleErrorLocal(ErrorCategory.SECURE_STORAGE))
+    if (!this.canAdd || this.adding) {
+      return
     }
-
-    if (this.bip39Passphrase.length > 0) {
-      const alert = await this.alertController.create({
-        header: 'BIP-39 Passphrase',
-        message:
-          'You set a BIP-39 Passphrase. You will need to enter this passphrase again when you import your secret. If you lose your passphrase, you will lose access to your account!',
-        backdropDismiss: false,
-        inputs: [
-          {
-            name: 'understood',
-            type: 'checkbox',
-            label: 'I understand',
-            value: 'understood',
-            checked: false
-          }
-        ],
-        buttons: [
-          {
-            text: 'Cancel',
-            role: 'cancel'
-          },
-          {
-            text: 'Ok',
-            handler: async (result: string[]) => {
-              if (result.includes('understood')) {
-                addAccount()
-              }
-            }
-          }
-        ]
-      })
-      alert.present()
-    } else {
-      addAccount()
+    this.adding = true
+    const revision = this.revision
+    try {
+      const selectedProtocols = this.protocolList.filter((protocol) => protocol.isChecked)
+      const configs = await Promise.all(selectedProtocols.map(async (wrapper: ProtocolWrapper) => ({
+        protocolIdentifier: await wrapper.protocol.getIdentifier(),
+        isHDWallet: wrapper.isHDWallet,
+        customDerivationPath: wrapper.customDerivationPath ?? (await wrapper.protocol.getStandardDerivationPath()),
+        isActive: true
+      })))
+      if (!this.canAdd || revision !== this.revision) {
+        return
+      }
+      const createdWallets = await this.secretsService.addWallets(this.secret, configs)
+      if (!this.canAdd || revision !== this.revision) {
+        return
+      }
+      if (createdWallets.length === 1) {
+        await this.navigationService.routeWithState('/account-address', { wallet: createdWallets[0], secret: this.secret }, { replaceUrl: true })
+      } else {
+        await this.navigationService.routeWithState('/accounts-list', { secret: this.secret }, { replaceUrl: true })
+      }
+    } catch (error) {
+      handleErrorLocal(ErrorCategory.SECURE_STORAGE)(error)
+    } finally {
+      this.adding = false
     }
   }
 
   public goToIsolatedModule(): void {
+    if (!this.canAdd) {
+      return
+    }
     this.navigationService.route('/isolated-modules-list').catch(handleErrorLocal(ErrorCategory.IONIC_NAVIGATION))
   }
 }

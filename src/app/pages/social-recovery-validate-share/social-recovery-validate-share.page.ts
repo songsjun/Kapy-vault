@@ -6,6 +6,7 @@ import { DeviceService } from '../../services/device/device.service'
 import { ErrorCategory, handleErrorLocal } from '../../services/error-handler/error-handler.service'
 import { NavigationService } from '../../services/navigation/navigation.service'
 import { SecretsService } from '../../services/secrets/secrets.service'
+import { DefaultSecretAccess } from '../../services/navigation/default-secret-access'
 
 @Component({
   selector: 'airgap-social-recovery-validate-share',
@@ -20,6 +21,7 @@ export class SocialRecoveryValidateSharePage {
   public shares: string[]
   public currentShare: number
   public secret: MnemonicSecret
+  private readonly access: DefaultSecretAccess
 
   constructor(
     private readonly deviceService: DeviceService,
@@ -29,9 +31,11 @@ export class SocialRecoveryValidateSharePage {
     this.shares = this.navigationService.getState().shares
     this.secret = this.navigationService.getState().secret
     this.currentShare = this.navigationService.getState().currentShare
+    this.access = new DefaultSecretAccess(this.navigationService, this.secret, () => this.clearSensitiveFields())
   }
 
   public ionViewDidEnter(): void {
+    this.access.assert()
     this.deviceService.enableScreenshotProtection({ routeBack: 'social-recovery-validate-share' })
   }
 
@@ -52,11 +56,13 @@ export class SocialRecoveryValidateSharePage {
   }
 
   public next() {
+    this.access.assert()
     if (this.shares.length === this.currentShare + 1) {
       this.secret.hasSocialRecovery = true
       this.secretsService
         .addOrUpdateSecret(this.secret)
         .then(() => {
+          this.access.assert()
           // TODO: Route back to secret detail page
           this.navigationService.route('/tabs/tab-settings').catch(handleErrorLocal(ErrorCategory.IONIC_NAVIGATION))
         })
@@ -67,4 +73,15 @@ export class SocialRecoveryValidateSharePage {
         .catch(handleErrorLocal(ErrorCategory.IONIC_NAVIGATION))
     }
   }
+  private clearSensitiveFields(): void {
+    this.shares = []
+    this.validated = false
+    if (this.verify) {
+      this.verify.secret = ''
+      this.verify.splittedSecret = []
+      this.verify.currentWords = []
+      this.verify.promptedWords = []
+    }
+  }
+  public ngOnDestroy(): void { this.access.dispose(); this.clearSensitiveFields() }
 }

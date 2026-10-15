@@ -2,6 +2,7 @@ import { Component } from '@angular/core'
 import { MnemonicSecret } from 'src/app/models/secret'
 import { ErrorCategory, handleErrorLocal } from 'src/app/services/error-handler/error-handler.service'
 import { NavigationService } from 'src/app/services/navigation/navigation.service'
+import { DefaultSecretAccess } from '../../services/navigation/default-secret-access'
 
 @Component({
   selector: 'airgap-social-recovery-generate-rules',
@@ -11,13 +12,15 @@ import { NavigationService } from 'src/app/services/navigation/navigation.servic
 export class SocialRecoveryGenerateRulesPage {
   public state: 0 | 1 | 2 | 3 | 4 | 5 = 0
   private readonly required: number
-  private readonly shares: string[]
+  private shares: string[]
   private readonly secret: MnemonicSecret
+  private readonly access: DefaultSecretAccess
 
   constructor(private readonly navigationService: NavigationService) {
     this.shares = this.navigationService.getState().shares
     this.secret = this.navigationService.getState().secret
     this.required = this.navigationService.getState().required
+    this.access = new DefaultSecretAccess(this.navigationService, this.secret, () => { this.shares = [] })
   }
 
   changeState(i: 0 | 1 | 2 | 3 | 4 | 5) {
@@ -30,6 +33,7 @@ export class SocialRecoveryGenerateRulesPage {
   }
 
   nextState() {
+    this.access.assert()
     if (this.state < 5) {
       this.state++
       return
@@ -44,4 +48,6 @@ export class SocialRecoveryGenerateRulesPage {
         .catch(handleErrorLocal(ErrorCategory.IONIC_NAVIGATION))
     }
   }
+  public ionViewWillEnter(): void { this.access.assert() }
+  public ngOnDestroy(): void { this.access.dispose(); this.shares = [] }
 }

@@ -1,5 +1,5 @@
 import { assertNever, UIAction, UIActionStatus, UiEventService, UIResource, UIResourceStatus } from '@airgap/angular-core'
-import { AirGapWallet, IAirGapTransaction, ProtocolSymbols } from '@airgap/coinlib-core'
+import { AirGapWallet, IAirGapTransaction } from '@airgap/coinlib-core'
 import { Component, OnDestroy } from '@angular/core'
 import { ModalController } from '@ionic/angular'
 import { AlertOptions, LoadingOptions, ModalOptions, OverlayEventDetail } from '@ionic/core'
@@ -10,6 +10,7 @@ import { debounceTime, distinctUntilChanged, takeUntil } from 'rxjs/operators'
 
 import { ErrorCategory, handleErrorLocal } from '../../services/error-handler/error-handler.service'
 import { SelectAccountPage } from '../select-account/select-account.page'
+import { WalletAccessService } from '../../services/wallet-access/wallet-access.service'
 
 import * as actions from './deserialized-detail.actions'
 import * as fromDeserializedDetail from './deserialized-detail.reducer'
@@ -43,19 +44,33 @@ export class DeserializedDetailPage implements OnDestroy {
   private loadingElement: HTMLIonLoadingElement | undefined
   private alertElement: HTMLIonAlertElement | undefined
   private modalElement: HTMLIonModalElement | undefined
+  private contextId: number
+  private pageActive = false
   private readonly ngDestroyed$: Subject<void> = new Subject()
 
   constructor(
     private readonly store: Store<fromDeserializedDetail.State>,
     private readonly uiEventService: UiEventService,
     private readonly modalController: ModalController,
-    private readonly navigationService: NavigationService
+    private readonly navigationService: NavigationService,
+    private readonly access: WalletAccessService
   ) {
     const state = this.navigationService.getState()
+    this.contextId = state.contextId
+    this.access.changes$.pipe(takeUntil(this.ngDestroyed$)).subscribe((context) => {
+      if (!context || context.epoch !== this.contextId) {
+        this.store.dispatch(actions.viewClosed())
+        this.signingWallet = undefined
+        this.secretLabel = undefined
+        this.loadingElement?.dismiss().catch(() => undefined)
+        this.alertElement?.dismiss().catch(() => undefined)
+        this.modalElement?.dismiss().catch(() => undefined)
+      }
+    })
     if (state.transactionInfos && state.transactionInfos[0]) {
       const transactionInfos = state.transactionInfos
       this.signingWallet = transactionInfos[0].wallet
-      this.secretLabel = transactionInfos[0].secret.label
+      this.secretLabel = transactionInfos[0].secret?.label
     }
 
     this.mode$ = this.store.select(fromDeserializedDetail.selectMode)
@@ -76,27 +91,43 @@ export class DeserializedDetailPage implements OnDestroy {
     this.alert$.pipe(takeUntil(this.ngDestroyed$)).subscribe(this.showOrDismissAlert.bind(this))
     this.modal$.pipe(takeUntil(this.ngDestroyed$)).subscribe(this.showOrDismissModal.bind(this))
 
-    this.store.dispatch(actions.viewInitialization())
   }
 
+  public ionViewWillEnter(): void {
+    this.pageActive = true
+    this.contextId = this.navigationService.getState().contextId
+    this.store.dispatch(actions.viewInitialization())
+  }
+  public ionViewWillLeave(): void { this.pageActive = false; this.store.dispatch(actions.viewClosed()) }
+
   public ngOnDestroy(): void {
+    this.pageActive = false
+    this.store.dispatch(actions.viewClosed())
     this.ngDestroyed$.next()
     this.ngDestroyed$.complete()
   }
 
   public continue(): void {
+    if (!this.isCurrent()) return
     this.store.dispatch(actions.approved())
+  }
+
+  private isCurrent(): boolean {
+    try { this.access.assertContext(this.contextId); return this.pageActive } catch { return false }
   }
 
   private async showOrHideLoader(task: (UIAction<Task> & { userInput: actions.UserInput }) | undefined): Promise<void> {
     this.loadingElement?.dismiss().catch(handleErrorLocal(ErrorCategory.IONIC_LOADER))
-    if (task?.status === UIActionStatus.PENDING) {
-      this.loadingElement = await this.uiEventService.getTranslatedLoader(this.getLoaderData(task.value))
+    if (task?.status === UIActionStatus.PENDING && this.isCurrent()) {
+      const element = await this.uiEventService.getTranslatedLoader(this.getLoaderData(task.value))
+      if (!this.isCurrent()) { element.dismiss().catch(() => undefined); return }
+      this.loadingElement = element
 
       // return this.loadingElement.present().catch(handleErrorLocal(ErrorCategory.IONIC_LOADER))
 
       // FIXME [#210]: replace with the above once the performance issue is resolved
       await this.loadingElement.present().catch(handleErrorLocal(ErrorCategory.IONIC_LOADER))
+      if (!this.isCurrent()) { this.loadingElement.dismiss().catch(() => undefined); return }
       this.store.dispatch(actions.continueApproved({ userInput: task.userInput }))
       // [#210]
     } else {
@@ -106,14 +137,16 @@ export class DeserializedDetailPage implements OnDestroy {
 
   private async showOrDismissAlert(alert: UIAction<Alert> | undefined): Promise<void> {
     this.alertElement?.dismiss().catch(handleErrorLocal(ErrorCategory.IONIC_ALERT))
-    if (alert?.status === UIActionStatus.PENDING) {
-      this.alertElement = await this.uiEventService.getTranslatedAlert(this.getAlertData(alert.value))
+    if (alert?.status === UIActionStatus.PENDING && this.isCurrent()) {
+      const element = await this.uiEventService.getTranslatedAlert(this.getAlertData(alert.value))
+      if (!this.isCurrent()) { element.dismiss().catch(() => undefined); return }
+      this.alertElement = element
       this.alertElement.present().catch(handleErrorLocal(ErrorCategory.IONIC_ALERT))
 
       return this.alertElement
         .onWillDismiss()
         .then(() => {
-          this.store.dispatch(actions.alertDismissed({ id: alert.id }))
+          if (this.isCurrent()) this.store.dispatch(actions.alertDismissed({ id: alert.id }))
         })
         .catch(handleErrorLocal(ErrorCategory.IONIC_ALERT))
     } else {
@@ -123,14 +156,17 @@ export class DeserializedDetailPage implements OnDestroy {
 
   private async showOrDismissModal(modal: UIAction<Modal> | undefined): Promise<void> {
     this.modalElement?.dismiss().catch(handleErrorLocal(ErrorCategory.IONIC_MODAL))
-    if (modal?.status === UIActionStatus.PENDING) {
+    if (modal?.status === UIActionStatus.PENDING && this.isCurrent()) {
       const [modalOptions, onDismissAction]: [ModalOptions, ModalOnDismissAction] = this.getModalData(modal.value)
-      this.modalElement = await this.modalController.create(modalOptions)
+      const element = await this.modalController.create(modalOptions)
+      if (!this.isCurrent()) { element.dismiss().catch(() => undefined); return }
+      this.modalElement = element
       this.modalElement.present().catch(handleErrorLocal(ErrorCategory.IONIC_MODAL))
 
       return this.modalElement
         .onWillDismiss()
-        .then((data: OverlayEventDetail<unknown>): Promise<void> => {
+        .then(async (data: OverlayEventDetail<unknown>): Promise<void> => {
+          if (!this.isCurrent()) return
           this.store.dispatch(actions.modalDismissed({ id: modal.id }))
 
           return onDismissAction(data)
@@ -174,53 +210,12 @@ export class DeserializedDetailPage implements OnDestroy {
 
   private getAlertData(alert: Alert): AlertOptions {
     switch (alert.type) {
-      case 'bip39Passphrase':
-        return this.bip39PassphraseAlert()
-      case 'bip39PassphraseError':
-        return this.bip39PassphraseErrorAlert()
       case 'secretNotFound':
         return this.secretNotFoundErrorAlert()
       case 'unknownError':
         return this.unknownErrorAlert(alert.message)
       default:
         assertNever('getAlertData', alert)
-    }
-  }
-
-  private bip39PassphraseAlert(): AlertOptions {
-    return {
-      header: 'deserialized-detail.alert.bip39-passphrase.header',
-      message: 'deserialized-detail.alert.bip39-passphrase.message',
-      backdropDismiss: false,
-      inputs: [
-        {
-          name: 'bip39Passphrase',
-          type: 'password',
-          placeholder: 'deserialized-detail.alert.bip39-passphrase.input-placeholder_label'
-        }
-      ],
-      buttons: [
-        {
-          text: 'deserialized-detail.alert.bip39-passphrase.button_label',
-          handler: async (result: { bip39Passphrase: string }): Promise<void> => {
-            const passphrase: string = result.bip39Passphrase ?? ''
-            this.store.dispatch(actions.bip39PassphraseProvided({ passphrase }))
-          }
-        }
-      ]
-    }
-  }
-
-  private bip39PassphraseErrorAlert(): AlertOptions {
-    return {
-      header: 'deserialized-detail.alert.bip39-passphrase-error.header',
-      message: 'deserialized-detail.alert.bip39-passphrase-error.message',
-      backdropDismiss: false,
-      buttons: [
-        {
-          text: 'deserialized-detail.alert.bip39-passphrase-error.button_label'
-        }
-      ]
     }
   }
 
@@ -266,11 +261,12 @@ export class DeserializedDetailPage implements OnDestroy {
     }
 
     const action: ModalOnDismissAction = async (modalData: OverlayEventDetail<unknown>): Promise<void> => {
-      if (modalData.data === undefined || typeof modalData.data !== 'string') {
+      if (modalData.data === undefined) {
         return
       }
 
-      this.store.dispatch(actions.signingProtocolProvided({ protocol: modalData.data as ProtocolSymbols }))
+      // Account selection occurs before loading the request, within the current wallet context.
+      this.store.dispatch(actions.unknownError({ message: 'Select the account and scan the request again.' }))
     }
 
     return [options, action]

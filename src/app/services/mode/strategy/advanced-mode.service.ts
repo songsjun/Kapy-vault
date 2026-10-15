@@ -2,6 +2,7 @@ import { Injectable } from '@angular/core'
 
 import { ErrorCategory, handleErrorLocal } from '../../error-handler/error-handler.service'
 import { NavigationService } from '../../navigation/navigation.service'
+import { WalletAccessService } from '../../wallet-access/wallet-access.service'
 
 import { ModeStrategy } from './ModeStrategy'
 
@@ -9,9 +10,12 @@ import { ModeStrategy } from './ModeStrategy'
   providedIn: 'root'
 })
 export class AdvancedModeSerivce implements ModeStrategy {
-  constructor(private readonly navigationService: NavigationService) {}
+  constructor(private readonly navigationService: NavigationService, private readonly access: WalletAccessService) {}
 
   public async syncAll(): Promise<void> {
-    await this.navigationService.route('/account-share-select').catch(handleErrorLocal(ErrorCategory.IONIC_NAVIGATION))
+    const contextId = this.access.getContextId()
+    const secret = this.access.getCurrentSecret()
+    await this.navigationService.routeWithState('/account-share-select', { secret, contextId })
+      .catch(handleErrorLocal(ErrorCategory.IONIC_NAVIGATION))
   }
 }

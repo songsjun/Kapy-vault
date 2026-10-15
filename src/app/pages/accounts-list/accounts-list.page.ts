@@ -1,16 +1,15 @@
 import { AirGapWallet, AirGapWalletStatus } from '@airgap/coinlib-core'
 import { Component } from '@angular/core'
-import { Router } from '@angular/router'
 import { AlertController, Platform, PopoverController } from '@ionic/angular'
 import { TranslateService } from '@ngx-translate/core'
-import { BehaviorSubject } from 'rxjs'
-import { first } from 'rxjs/operators'
+import { BehaviorSubject, Subscription } from 'rxjs'
 import { MnemonicSecret } from 'src/app/models/secret'
 import { ErrorCategory, handleErrorLocal } from 'src/app/services/error-handler/error-handler.service'
 import { ModeService } from 'src/app/services/mode/mode.service'
 import { ModeStrategy } from 'src/app/services/mode/strategy/ModeStrategy'
 import { NavigationService } from 'src/app/services/navigation/navigation.service'
 import { SecretsService } from 'src/app/services/secrets/secrets.service'
+import { WalletAccessService } from 'src/app/services/wallet-access/wallet-access.service'
 import { AccountsListEditPopoverComponent } from './accounts-list-edit-popover/accounts-list-edit-popover.component'
 
 @Component({
@@ -25,6 +24,13 @@ export class AccountsListPage {
   public selectedWallets: AirGapWallet[] = []
   public readonly isAndroid: boolean
   public readonly AirGapWalletStatus: typeof AirGapWalletStatus = AirGapWalletStatus
+  private active: boolean = false
+  private revision: number = 0
+  private readonly accessSubscription: Subscription
+
+  public get canView(): boolean {
+    return this.active && !!this.secret && this.walletAccess.isUnlocked(this.secret)
+  }
 
   constructor(
     private readonly platform: Platform,
@@ -33,60 +39,117 @@ export class AccountsListPage {
     private readonly alertCtrl: AlertController,
     private readonly translateService: TranslateService,
     private readonly secretsService: SecretsService,
-    private readonly router: Router,
-    private readonly popoverCtrl: PopoverController
+    private readonly popoverCtrl: PopoverController,
+    public readonly walletAccess: WalletAccessService
   ) {
     this.isAndroid = this.platform.is('android')
+    this.accessSubscription = this.walletAccess.changes$.subscribe(() => {
+      this.clearView()
+      if (this.active) {
+        if (this.canView) {
+          this.secret = this.walletAccess.getCurrentSecret()
+          this.loadWallets().catch(handleErrorLocal(ErrorCategory.SECURE_STORAGE))
+        } else {
+          this.navigationService.routeToSecretsTab().catch(handleErrorLocal(ErrorCategory.IONIC_NAVIGATION))
+        }
+      }
+    })
   }
 
-  ionViewWillEnter() {
-    this.secret = this.navigationService?.getState()?.secret
-    if (this.secret) {
-      this.loadWallets()
-    } else {
-      this.router.navigate(['/'])
-      throw new Error('[AccountsListPage]: No secret found! Navigating to home page.')
+  public ionViewWillEnter(): void {
+    this.active = true
+    this.clearView()
+    const requestedSecret: MnemonicSecret | undefined = this.navigationService.getState()?.secret
+    const currentSecret = this.walletAccess.getCurrentSecret()
+    if (!requestedSecret || !currentSecret || requestedSecret.id !== currentSecret.id || !this.walletAccess.isUnlocked(currentSecret)) {
+      this.secret = undefined
+      this.navigationService.routeToSecretsTab().catch(handleErrorLocal(ErrorCategory.IONIC_NAVIGATION))
+      return
     }
+    this.secret = currentSecret
+    this.loadWallets().catch(handleErrorLocal(ErrorCategory.SECURE_STORAGE))
   }
 
-  private async loadWallets() {
-    const comparableWallets: [string, AirGapWallet][] = await Promise.all(
-      [...this.secret?.wallets].map(async (wallet: AirGapWallet) => {
-        return [await wallet.protocol.getName(), wallet] as [string, AirGapWallet]
-      })
-    )
-    const sortedWallets: AirGapWallet[] = comparableWallets
-      .sort((a: [string, AirGapWallet], b: [string, AirGapWallet]) => a[0].localeCompare(b[0]))
-      .map(([_, wallet]: [string, AirGapWallet]) => wallet)
+  public ionViewDidLeave(): void {
+    this.active = false
+    this.clearView()
+  }
 
-    this.wallets$.next(sortedWallets)
+  public ngOnDestroy(): void {
+    this.ionViewDidLeave()
+    this.accessSubscription.unsubscribe()
+  }
+
+  private clearView(): void {
+    this.revision++
+    this.wallets$.next([])
+    this.selectedWallets = []
+    this.deleteView = false
+  }
+
+  private containsWallet(wallet: AirGapWallet): boolean {
+    return this.active && this.canView && this.walletAccess.getWallets(this.secret).includes(wallet)
+  }
+
+  private async loadWallets(): Promise<void> {
+    if (!this.active || !this.canView) {
+      return
+    }
+    const revision = ++this.revision
+    const wallets = this.walletAccess.getWallets(this.secret)
+    const comparableWallets: [string, AirGapWallet][] = await Promise.all(
+      wallets.map(async (wallet): Promise<[string, AirGapWallet]> => [await wallet.protocol.getName(), wallet])
+    )
+    if (!this.active || !this.canView || revision !== this.revision) {
+      return
+    }
+    const currentWallets = this.walletAccess.getWallets(this.secret)
+    this.wallets$.next(comparableWallets
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([, wallet]) => wallet)
+      .filter((wallet) => currentWallets.includes(wallet)))
   }
 
   public goToReceiveAddress(wallet: AirGapWallet): void {
-    this.navigationService
-      .routeWithState('/account-address', { wallet: wallet, secret: this.secret })
+    if (!this.containsWallet(wallet)) {
+      return
+    }
+    this.navigationService.routeWithState('/account-address', { wallet, secret: this.secret })
       .catch(handleErrorLocal(ErrorCategory.IONIC_NAVIGATION))
   }
 
   public async syncWallets(): Promise<void> {
+    if (!this.active || !this.canView) {
+      return
+    }
     const strategy: ModeStrategy = await this.modeService.strategy()
-    await strategy.syncAll()
+    if (this.active && this.canView) {
+      await strategy.syncAll()
+    }
   }
 
   public addWallet(): void {
-    this.navigationService.routeWithState('/account-add', { secret: this.secret }).catch(handleErrorLocal(ErrorCategory.IONIC_NAVIGATION))
+    if (this.active && this.canView) {
+      this.navigationService.routeWithState('/account-add', { secret: this.secret }).catch(handleErrorLocal(ErrorCategory.IONIC_NAVIGATION))
+    }
   }
 
   public goToEditSecret(): void {
-    this.navigationService.routeWithState('/secret-edit', { secret: this.secret }).catch(handleErrorLocal(ErrorCategory.IONIC_NAVIGATION))
+    if (this.active && this.canView && this.walletAccess.isDefaultUnlocked(this.secret)) {
+      this.navigationService.routeWithState('/secret-edit', { secret: this.secret }).catch(handleErrorLocal(ErrorCategory.IONIC_NAVIGATION))
+    }
   }
 
   public async presentEditPopover(event: Event): Promise<void> {
+    if (!this.active || !this.canView) {
+      return
+    }
     const popover: HTMLIonPopoverElement = await this.popoverCtrl.create({
       component: AccountsListEditPopoverComponent,
       componentProps: {
+        canManageSecret: this.walletAccess.isDefaultUnlocked(this.secret),
         onClickSyncWallets: (): void => {
-          this.syncWallets()
+          this.syncWallets().catch(handleErrorLocal(ErrorCategory.IONIC_NAVIGATION))
           popover.dismiss().catch(handleErrorLocal(ErrorCategory.IONIC_MODAL))
         },
         onClickToggleDeleteView: (): void => {
@@ -105,70 +168,74 @@ export class AccountsListPage {
       event,
       translucent: true
     })
-
-    popover.present().catch(handleErrorLocal(ErrorCategory.IONIC_MODAL))
+    if (this.active && this.canView) {
+      await popover.present()
+    }
   }
 
-  public delete(wallet: AirGapWallet): void {
-    this.translateService
-      .get([
-        'wallet-edit-delete-popover.account-removal_alert.title',
-        'wallet-edit-delete-popover.account-removal_alert.text',
-        'wallet-edit-delete-popover.account-removal_alert.cancel_label',
-        'wallet-edit-delete-popover.account-removal_alert.delete_label'
-      ])
-      .pipe(first())
-      .subscribe(async (values: string[]) => {
-        const title: string = values['wallet-edit-delete-popover.account-removal_alert.title']
-        const message: string = values['wallet-edit-delete-popover.account-removal_alert.text']
-        const cancelButton: string = values['wallet-edit-delete-popover.account-removal_alert.cancel_label']
-        const deleteButton: string = values['wallet-edit-delete-popover.account-removal_alert.delete_label']
-
-        const alert: HTMLIonAlertElement = await this.alertCtrl.create({
-          header: title,
-          message,
-          buttons: [
-            {
-              text: cancelButton,
-              role: 'cancel'
-            },
-            {
-              text: deleteButton,
-              handler: (): void => {
-                this.secretsService.removeWallet(wallet).catch(handleErrorLocal(ErrorCategory.SECURE_STORAGE))
-                this.loadWallets()
-              }
+  public async delete(wallet: AirGapWallet): Promise<void> {
+    if (!this.containsWallet(wallet)) {
+      return
+    }
+    const prefix = 'wallet-edit-delete-popover.account-removal_alert.'
+    const alert = await this.alertCtrl.create({
+      header: this.translateService.instant(prefix + 'title'),
+      message: this.translateService.instant(prefix + 'text'),
+      buttons: [
+        { text: this.translateService.instant(prefix + 'cancel_label'), role: 'cancel' },
+        {
+          text: this.translateService.instant(prefix + 'delete_label'),
+          handler: async () => {
+            if (!this.containsWallet(wallet)) {
+              return
             }
-          ]
-        })
-        alert.present().catch(handleErrorLocal(ErrorCategory.IONIC_ALERT))
-      })
+            try {
+              await this.secretsService.removeWallet(wallet)
+              await this.loadWallets()
+            } catch (error) {
+              handleErrorLocal(ErrorCategory.SECURE_STORAGE)(error)
+            }
+          }
+        }
+      ]
+    })
+    if (this.containsWallet(wallet)) {
+      await alert.present()
+    }
   }
 
   public onWalletSelected(event: CustomEvent & { detail: { checked: boolean } }, wallet: AirGapWallet): void {
+    if (!this.containsWallet(wallet)) {
+      return
+    }
     const index = this.selectedWallets.indexOf(wallet)
-    const { checked } = event.detail
-
-    if (checked && index === -1) {
-      // if the selected wallet is missing from the array, add it
+    if (event.detail.checked && index === -1) {
       this.selectedWallets.push(wallet)
-    } else if (!checked && index !== -1) {
-      // otherwise when the checkbox is unchecked, remove it
+    } else if (!event.detail.checked && index !== -1) {
       this.selectedWallets.splice(index, 1)
     }
   }
 
   public async removeWallets(): Promise<void> {
-    await this.secretsService.removeWallets(this.selectedWallets)
-    this.loadWallets()
-    this.toggleDeleteView()
+    if (!this.active || !this.canView || this.selectedWallets.some((wallet) => !this.containsWallet(wallet))) {
+      return
+    }
+    await this.secretsService.removeWallets([...this.selectedWallets])
+    this.selectedWallets = []
+    await this.loadWallets()
+    this.deleteView = false
   }
 
-  toggleDeleteView() {
-    this.deleteView = !this.deleteView
+  public toggleDeleteView(): void {
+    if (this.active && this.canView) {
+      this.deleteView = !this.deleteView
+      this.selectedWallets = []
+    }
   }
 
-  navigateToSecretsTab() {
-    this.navigationService.routeBack('tabs/tab-secrets')
+  public navigateToSecretsTab(): void {
+    this.walletAccess.lock()
+    this.clearView()
+    this.navigationService.routeToSecretsTab().catch(handleErrorLocal(ErrorCategory.IONIC_NAVIGATION))
   }
 }

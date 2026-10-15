@@ -6,8 +6,7 @@ import { SecretsService } from 'src/app/services/secrets/secrets.service'
 import { ErrorCategory, handleErrorLocal } from 'src/app/services/error-handler/error-handler.service'
 import { NavigationService } from 'src/app/services/navigation/navigation.service'
 import { TabSecretPopoverComponent } from './tab-secret-popover/tab-secret-popover.component'
-import { ModeService } from 'src/app/services/mode/mode.service'
-import { ModeStrategy } from 'src/app/services/mode/strategy/ModeStrategy'
+import { WalletAccessService } from 'src/app/services/wallet-access/wallet-access.service'
 
 @Component({
   selector: 'airgap-tab-secrets',
@@ -23,7 +22,7 @@ export class TabSecretsPage {
     public modalController: ModalController,
     public navigationService: NavigationService,
     private secretsService: SecretsService,
-    private readonly modeService: ModeService
+    private readonly walletAccess: WalletAccessService
   ) {
     this.secrets = this.secretsService.getSecretsObservable()
   }
@@ -34,6 +33,10 @@ export class TabSecretsPage {
         this.navigationService.route('/secret-setup/initial').catch(handleErrorLocal(ErrorCategory.IONIC_NAVIGATION))
       }
     }) // We should never unsubscribe, because we need to watch this in case a user deletes all his secrets
+  }
+
+  public ionViewWillEnter(): void {
+    this.walletAccess.lock()
   }
 
   public filterItems(event: any): void {
@@ -50,10 +53,6 @@ export class TabSecretsPage {
     const popover = await this.popoverCtrl.create({
       component: TabSecretPopoverComponent,
       componentProps: {
-        onClickSyncWallets: (): void => {
-          this.syncWallets()
-          popover.dismiss().catch(handleErrorLocal(ErrorCategory.IONIC_MODAL))
-        },
         onClickNewSecret: (): void => {
           popover.dismiss().catch(handleErrorLocal(ErrorCategory.IONIC_MODAL))
         }
@@ -63,11 +62,6 @@ export class TabSecretsPage {
     })
 
     popover.present().catch(handleErrorLocal(ErrorCategory.IONIC_MODAL))
-  }
-
-  public async syncWallets(): Promise<void> {
-    const strategy: ModeStrategy = await this.modeService.strategy()
-    await strategy.syncAll()
   }
 
   addSecret() {

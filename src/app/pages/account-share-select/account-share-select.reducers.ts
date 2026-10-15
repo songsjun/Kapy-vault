@@ -62,13 +62,14 @@ export const reducer = createReducer(
       status: UIActionStatus.PENDING
     }
   })),
-  on(actions.shareUrlGeneratedExcludedLegacy, (state, { shareUrl }) => ({
+  on(actions.shareUrlGeneratedExcludedLegacy, (state, { shareUrl, contextId }) => ({
     ...state,
     alert: {
       id: generateGUID(),
       value: {
         type: 'excludedLegacyAccounts' as ExcludedLegacyAccountsAlert['type'],
-        shareUrl
+        shareUrl,
+        contextId
       },
       status: UIActionStatus.PENDING
     }

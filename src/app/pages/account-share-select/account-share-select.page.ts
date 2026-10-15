@@ -13,6 +13,7 @@ import { ErrorCategory, handleErrorLocal } from '../../services/error-handler/er
 import * as actions from './account-share-select.actions'
 import * as fromAccountShareSelect from './account-share-select.reducers'
 import { Alert } from './account-share-select.types'
+import { WalletAccessService } from '../../services/wallet-access/wallet-access.service'
 
 @Component({
   selector: 'airgap-account-share-select',
@@ -20,6 +21,10 @@ import { Alert } from './account-share-select.types'
   styleUrls: ['./account-share-select.page.scss']
 })
 export class AccountShareSelectPage implements OnDestroy {
+  private contextId: number
+  public get isCurrent(): boolean {
+    try { this.access.assertContext(this.contextId); return true } catch { return false }
+  }
   public readonly secrets$: Observable<UIResource<MnemonicSecret[]>>
   public readonly isChecked$: Observable<Record<string, boolean>>
 
@@ -34,7 +39,7 @@ export class AccountShareSelectPage implements OnDestroy {
 
   private readonly ngDestroyed$: Subject<void> = new Subject()
 
-  constructor(private readonly store: Store<fromAccountShareSelect.State>, private readonly uiEventService: UiEventService) {
+  constructor(private readonly store: Store<fromAccountShareSelect.State>, private readonly uiEventService: UiEventService, private readonly access: WalletAccessService) {
     this.secrets$ = this.store.select(fromAccountShareSelect.selectSecrets)
     this.isChecked$ = this.store.select(fromAccountShareSelect.selectIsSecretChecked)
 
@@ -44,6 +49,7 @@ export class AccountShareSelectPage implements OnDestroy {
 
     this.alert$.pipe(takeUntil(this.ngDestroyed$)).subscribe(this.showOrDismissAlert.bind(this))
 
+    this.contextId = this.access.isUnlocked() ? this.access.getContextId() : undefined
     this.store.dispatch(actions.viewInitialization())
   }
 
@@ -53,10 +59,13 @@ export class AccountShareSelectPage implements OnDestroy {
   }
 
   public toggleSecret(secret: MnemonicSecret): void {
+    this.access.assertContext(this.contextId)
+    this.access.requireUnlocked(secret)
     this.store.dispatch(actions.secretToggled({ secretId: secret.id }))
   }
 
   public sync(): void {
+    this.access.assertContext(this.contextId)
     this.store.dispatch(actions.syncButtonClicked())
   }
 
@@ -82,7 +91,7 @@ export class AccountShareSelectPage implements OnDestroy {
       case 'walletsNotMigrated':
         return this.walletsNotMigratedAlert()
       case 'excludedLegacyAccounts':
-        return this.excludedLegacyAccountsAlert(alert.shareUrl)
+        return this.excludedLegacyAccountsAlert(alert.shareUrl, alert.contextId)
       case 'unknownError':
         return this.unknownErrorAlert(alert.message)
       default:
@@ -103,7 +112,7 @@ export class AccountShareSelectPage implements OnDestroy {
     }
   }
 
-  private excludedLegacyAccountsAlert(shareUrl: IACMessageDefinitionObjectV3[]): AlertOptions {
+  private excludedLegacyAccountsAlert(shareUrl: IACMessageDefinitionObjectV3[], contextId: number): AlertOptions {
     return {
       header: 'wallet-share-select.alert.excluded-legacy-accounts.header',
       message: 'wallet-share-select.alert.excluded-legacy-accounts.message',
@@ -115,7 +124,7 @@ export class AccountShareSelectPage implements OnDestroy {
         {
           text: 'wallet-share-select.alert.excluded-legacy-accounts.button-accept_label',
           handler: () => {
-            this.store.dispatch(actions.migrationAlertAccepted({ shareUrl }))
+            this.store.dispatch(actions.migrationAlertAccepted({ shareUrl, contextId }))
           }
         }
       ]

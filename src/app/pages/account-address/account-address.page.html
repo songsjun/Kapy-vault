@@ -6,14 +6,14 @@
     <ion-title>{{ 'wallet-address.title' | translate }}</ion-title>
 
     <ion-buttons slot="primary">
-      <ion-button (click)="presentEditPopover($event)">
+      <ion-button *ngIf="canView" (click)="presentEditPopover($event)">
         <ion-icon slot="icon-only" name="ellipsis-vertical"></ion-icon>
       </ion-button>
     </ion-buttons>
   </ion-toolbar>
 </ion-header>
 
-<ion-content *ngIf="wallet" class="ion-padding">
+<ion-content *ngIf="canView && wallet" class="ion-padding">
   <ion-row class="ion-padding">
     <ion-col>
       <ion-avatar>
@@ -72,7 +72,7 @@
       </ion-header>
       <ion-content>
         <ion-row class="ion-justify-content-center ion-padding-bottom">
-          <airgap-qr [qrdata]="wallet.receivingPublicAddress" [level]="'L'" [size]="300"></airgap-qr>
+          <airgap-qr *ngIf="canView" [qrdata]="wallet.receivingPublicAddress" [level]="'L'" [size]="300"></airgap-qr>
         </ion-row>
       </ion-content>
     </ng-template>

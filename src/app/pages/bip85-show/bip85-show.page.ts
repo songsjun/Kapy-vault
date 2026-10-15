@@ -11,8 +11,9 @@ import { DeviceService } from 'src/app/services/device/device.service'
 import { ErrorCategory, handleErrorLocal } from 'src/app/services/error-handler/error-handler.service'
 import { LifehashService } from 'src/app/services/lifehash/lifehash.service'
 import { NavigationService } from 'src/app/services/navigation/navigation.service'
-import { SecureStorage, SecureStorageService } from 'src/app/services/secure-storage/secure-storage.service'
+import { SecretsService } from 'src/app/services/secrets/secrets.service'
 import { AdvancedModeType, VaultStorageKey, VaultStorageService } from 'src/app/services/storage/storage.service'
+import { DefaultSecretAccess } from '../../services/navigation/default-secret-access'
 
 @Component({
   selector: 'airgap-bip85-show',
@@ -24,6 +25,7 @@ export class Bip85ShowPage {
   public mnemonicLength: 12 | 18 | 24
   public index: number
   private readonly bip32 = BIP32Factory(ecc)
+  private access: DefaultSecretAccess
 
   public childMnemonic: string | undefined
   public childFingerprint: string | undefined
@@ -42,7 +44,7 @@ export class Bip85ShowPage {
   constructor(
     private readonly deviceService: DeviceService,
     private readonly navigationService: NavigationService,
-    private readonly secureStorageService: SecureStorageService,
+    private readonly secretsService: SecretsService,
     private readonly lifehashService: LifehashService,
     private readonly storageService: VaultStorageService
   ) {
@@ -51,12 +53,18 @@ export class Bip85ShowPage {
       this.mnemonicLength = this.navigationService.getState().mnemonicLength
       this.index = this.navigationService.getState().index
       this.bip39Passphrase = this.navigationService.getState().bip39Passphrase
+      this.access = new DefaultSecretAccess(this.navigationService, this.secret, () => this.clearSensitiveFields())
 
-      this.generateChildMnemonic(this.secret, this.mnemonicLength, this.index)
+      this.generateChildMnemonic(this.secret, this.mnemonicLength, this.index).catch((error) => {
+        this.clearSensitiveFields()
+        try { this.access.assert() } catch (_) { return }
+        handleErrorLocal(ErrorCategory.SECURE_STORAGE)(error)
+      })
     }
   }
 
   public ionViewDidEnter(): void {
+    this.access.assert()
     this.deviceService.enableScreenshotProtection({ routeBack: 'bip85-show' })
   }
 
@@ -65,6 +73,7 @@ export class Bip85ShowPage {
   }
 
   public goToSecretSetupPage(): void {
+    this.access.assert()
     const signer: BIPSigner = new BIPSigner()
 
     const secret: MnemonicSecret = new MnemonicSecret(signer.mnemonicToEntropy(BIPSigner.prepareMnemonic(this.childMnemonic)))
@@ -77,6 +86,7 @@ export class Bip85ShowPage {
   public timeout: NodeJS.Timer
 
   changeBlur() {
+    this.access.assert()
     this.isBlurred = !this.isBlurred
 
     if (this.timeout) {
@@ -89,24 +99,42 @@ export class Bip85ShowPage {
   }
 
   private async generateChildMnemonic(secret: MnemonicSecret, length: 12 | 18 | 24, index: number) {
-    const secureStorage: SecureStorage = await this.secureStorageService.get(secret.id, secret.isParanoia)
-
+    this.access.assert()
     try {
-      const secretHex = await secureStorage.getItem(secret.id).then((result) => result.value)
+      const secretHex = await this.secretsService.retrieveEntropyForSecret(secret)
+      this.access.assert()
 
       const masterSeed = BIP85.fromEntropy(secretHex, this.bip39Passphrase)
 
       const childEntropy = masterSeed.deriveBIP39(0, length, index)
 
-      this.childMnemonic = childEntropy.toMnemonic()
+      const childMnemonic = childEntropy.toMnemonic()
 
-      const seed: Buffer = await mnemonicToSeed(this.childMnemonic)
+      const seed: Buffer = await mnemonicToSeed(childMnemonic)
+      this.access.assert()
       const bip32Node: BIP32Interface = this.bip32.fromSeed(new Uint8Array(seed))
+      seed.fill(0)
+      const lifehash = await this.lifehashService.generateLifehash(new Uint8Array(bip32Node.fingerprint))
+      this.access.assert()
+      this.childMnemonic = childMnemonic
       this.childFingerprint = Buffer.from(bip32Node.fingerprint).toString('hex')
-
-      this.lifehashData = await this.lifehashService.generateLifehash(new Uint8Array(bip32Node.fingerprint))
+      this.lifehashData = lifehash
     } catch (error) {
       throw error
     }
+  }
+
+  private clearSensitiveFields(): void {
+    clearTimeout(this.timeout)
+    this.isBlurred = true
+    this.childMnemonic = undefined
+    this.childFingerprint = undefined
+    this.lifehashData = undefined
+    this.bip39Passphrase = ''
+  }
+
+  public ngOnDestroy(): void {
+    this.access?.dispose()
+    this.clearSensitiveFields()
   }
 }

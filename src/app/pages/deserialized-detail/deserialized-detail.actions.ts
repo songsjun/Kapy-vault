@@ -1,4 +1,3 @@
-import { ProtocolSymbols } from '@airgap/coinlib-core'
 import { createAction, props } from '@ngrx/store'
 
 // tslint:disable: typedef
@@ -13,8 +12,7 @@ import {
 
 // FIXME [#210]: remove once the performance issue is resolved
 export interface UserInput {
-  bip39Passphrase?: string
-  protocol?: ProtocolSymbols
+  contextId: number
 }
 // [#210]
 
@@ -23,6 +21,8 @@ const featureName = 'Deserialized Detail'
 /**************** View Lifecycle ****************/
 
 export const viewInitialization = createAction(`[${featureName}] View Initialization`)
+export const viewClosed = createAction(`[${featureName}] View Closed`)
+export const operationCancelled = createAction(`[${featureName}] Operation Cancelled`)
 
 /**************** Navigation Data ****************/
 
@@ -55,8 +55,6 @@ export const continueApproved = createAction(`[${featureName}] Continue Approved
 export const alertDismissed = createAction(`[${featureName}] Alert Dismissed`, props<{ id: string }>())
 export const modalDismissed = createAction(`[${featureName}] Modal Dismissed`, props<{ id: string }>())
 
-export const bip39PassphraseProvided = createAction(`[${featureName}] BIP-39 Passphrase Provided`, props<{ passphrase: string }>())
-export const signingProtocolProvided = createAction(`[${featureName}] Signing Protocol Provided`, props<{ protocol: ProtocolSymbols }>())
 
 /**************** Internal ****************/
 
@@ -68,14 +66,13 @@ export const runningBlockingTask = createAction(`[${featureName}] Running Blocki
 
 export const transactionsSigned = createAction(
   `[${featureName}] Transactions Signed`,
-  props<{ transactions: DeserializedSignedTransaction[] }>()
+  props<{ transactions: DeserializedSignedTransaction[]; contextId: number }>()
 )
-export const messagesSigned = createAction(`[${featureName}] Messages Signed`, props<{ messages: DeserializedSignedMessage[] }>())
+export const messagesSigned = createAction(`[${featureName}] Messages Signed`, props<{ messages: DeserializedSignedMessage[]; contextId: number }>())
 
 export const loaderDismissed = createAction(`[${featureName}] Loader Dismissed`, props<{ id: string }>())
 
 export const secretNotFound = createAction(`[${featureName}] Secret Not Found`)
 export const protocolNotFound = createAction(`[${featureName}] Protocol Not Found`)
-export const invalidBip39Passphrase = createAction(`[${featureName}] Invalid BIP-39 Passphrase`)
 
 export const unknownError = createAction(`[${featureName}] Unknown Error`, props<{ message?: string }>())

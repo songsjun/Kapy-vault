@@ -9,16 +9,9 @@ import { NavigationService } from 'src/app/services/navigation/navigation.servic
   styleUrls: ['./tab-secret-popover.component.scss']
 })
 export class TabSecretPopoverComponent {
-  private readonly onClickSyncWallets: Function
   private readonly onClickNewSecret: Function
 
   constructor(public navigationService: NavigationService, protected navParams: NavParams) {}
-
-  public syncWalletsHandler() {
-    if (this.onClickSyncWallets) {
-      this.onClickSyncWallets()
-    }
-  }
 
   public goToNewSecret(): void {
     if (this.onClickNewSecret) {

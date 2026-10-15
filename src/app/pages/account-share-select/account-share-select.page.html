@@ -7,7 +7,7 @@
   </ion-toolbar>
 </ion-header>
 
-<ion-content class="ion-padding">
+<ion-content class="ion-padding" *ngIf="isCurrent">
   <h3 class="ion-padding-bottom" [innerHTML]="'wallet-share-select.heading' | translate"></h3>
 
   <ion-list lines="none" *ngIf="(secrets$ | async).status === UIResourceStatus.SUCCESS">

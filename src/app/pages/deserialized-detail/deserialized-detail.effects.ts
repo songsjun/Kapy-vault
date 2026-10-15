@@ -25,13 +25,13 @@ import { Action, Store } from '@ngrx/store'
 import { TranslateService } from '@ngx-translate/core'
 import * as bip39 from 'bip39'
 import { concat, from, of } from 'rxjs'
-import { concatMap, first, switchMap, tap, withLatestFrom } from 'rxjs/operators'
+import { catchError, first, switchMap, tap, withLatestFrom } from 'rxjs/operators'
 
-import { MnemonicSecret } from '../../models/secret'
 import { SignTransactionInfo } from '../../models/sign-transaction-info'
 import { InteractionOperationType, InteractionService } from '../../services/interaction/interaction.service'
 import { NavigationService } from '../../services/navigation/navigation.service'
 import { SecretsService } from '../../services/secrets/secrets.service'
+import { WalletAccessService } from '../../services/wallet-access/wallet-access.service'
 
 import * as actions from './deserialized-detail.actions'
 import * as fromDeserializedDetail from './deserialized-detail.reducer'
@@ -47,6 +47,10 @@ import {
 
 @Injectable()
 export class DeserializedDetailEffects {
+  private pageContextId: number | undefined
+  public viewClosed$ = createEffect(() => this.actions$.pipe(
+    ofType(actions.viewClosed), tap(() => { this.pageContextId = undefined })
+  ), { dispatch: false })
   public navigationData$ = createEffect(() =>
     this.actions$.pipe(
       ofType(actions.viewInitialization),
@@ -54,61 +58,32 @@ export class DeserializedDetailEffects {
     )
   )
 
-  // FIXME [#210]:
-  // We can no longer execute the signing step as a single action due to Sapling heavy computational transaction signing
-  // https://gitlab.papers.tech/papers/airgap/airgap-vault/-/issues/210
+  public approved$ = createEffect(() => this.actions$.pipe(
+    ofType(actions.approved),
+    withLatestFrom(this.store.select(fromDeserializedDetail.selectFinalPayload)),
+    switchMap(([_, payload]) => {
+      try {
+        this.assertRequestContext(this.pageContextId)
+        return of(actions.runningBlockingTask({ task: this.identifyPayloadTask(payload), userInput: { contextId: this.pageContextId } }))
+      } catch {
+        return of(actions.unknownError({ message: 'Open a Secret and scan the request again.' }))
+      }
+    })
+  ))
 
-  // public approved$ = createEffect(() =>
-  //   this.actions$.pipe(
-  //     ofType(actions.approved, actions.bip39PassphraseProvided, actions.signingProtocolProvided),
-  //     concatMap((action) => from([action]).pipe(withLatestFrom(this.store.select(fromDeserializedDetail.selectFinalPayload)))),
-  //     switchMap(([action, payload]) => {
-  //       const userInput = {
-  //         bip39Passphrase: 'passphrase' in action ? action.passphrase : undefined,
-  //         protocol: 'protocol' in action ? action.protocol : undefined
-  //       }
-
-  //       return concat(
-  //         of(actions.runningBlockingTask({ task: this.identifyPayloadTask(payload) })),
-  //         from(this.handlePayload(payload, userInput)).pipe(first())
-  //       )
-  //     })
-  //   )
-  // )
-  // [#210]
-
-  // FIXME [#210]: replace with the above once the performance issue is resolved
-  public approved$ = createEffect(() =>
-    this.actions$.pipe(
-      ofType(actions.approved, actions.bip39PassphraseProvided, actions.signingProtocolProvided),
-      concatMap((action) => from([action]).pipe(withLatestFrom(this.store.select(fromDeserializedDetail.selectFinalPayload)))),
-      switchMap(([action, payload]) => {
-        const userInput = {
-          bip39Passphrase: 'passphrase' in action ? action.passphrase : undefined,
-          protocol: 'protocol' in action ? action.protocol : undefined
-        }
-
-        return concat(of(actions.runningBlockingTask({ task: this.identifyPayloadTask(payload), userInput })))
-      })
-    )
-  )
-  // [#210]
-
-  // FIXME [#210]: remove once the performance issue is resolved
-  public continueApproved$ = createEffect(() =>
-    this.actions$.pipe(
-      ofType(actions.continueApproved),
-      concatMap((action) => from([action]).pipe(withLatestFrom(this.store.select(fromDeserializedDetail.selectFinalPayload)))),
-      switchMap(([action, payload]) => from(this.handlePayload(payload, action.userInput)).pipe(first()))
-    )
-  )
-  // [#210]
+  public continueApproved$ = createEffect(() => this.actions$.pipe(
+    ofType(actions.continueApproved),
+    withLatestFrom(this.store.select(fromDeserializedDetail.selectFinalPayload)),
+    switchMap(([action, payload]) => from(this.handlePayload(payload, action.userInput)).pipe(
+      first(), catchError(() => of(actions.operationCancelled()))
+    ))
+  ))
 
   public navigateWithSignedTransactions$ = createEffect(
     () =>
       this.actions$.pipe(
         ofType(actions.transactionsSigned),
-        tap((action) => this.navigateWithSignedTransactions(action.transactions))
+        tap((action) => { this.navigateWithSignedTransactions(action.transactions, action.contextId).catch(() => undefined) })
       ),
     { dispatch: false }
   )
@@ -117,7 +92,7 @@ export class DeserializedDetailEffects {
     () =>
       this.actions$.pipe(
         ofType(actions.messagesSigned),
-        tap((action) => this.navigateWithSignedMessages(action.messages))
+        tap((action) => { this.navigateWithSignedMessages(action.messages, action.contextId).catch(() => undefined) })
       ),
     { dispatch: false }
   )
@@ -131,11 +106,20 @@ export class DeserializedDetailEffects {
     private readonly secretsService: SecretsService,
     private readonly keyPairService: KeyPairService,
     private readonly transactionService: TransactionService,
-    private readonly interactionService: InteractionService
+    private readonly interactionService: InteractionService,
+    private readonly access: WalletAccessService
   ) {}
 
   private async loadNavigationData(): Promise<Action> {
     const state = this.navigationService.getState()
+    try {
+      this.access.assertContext(state.contextId)
+      this.pageContextId = state.contextId
+      for (const info of state.transactionInfos ?? []) this.access.assertWallet(info.wallet, info.secret)
+    } catch {
+      this.pageContextId = undefined
+      return actions.unknownError({ message: 'Open a Secret and scan the request again.' })
+    }
     const [, messageType]: [string | undefined, string | undefined] = this.getPageTypes(state.type)
     const mode: Mode | undefined = this.getMode(state.type)
 
@@ -149,11 +133,10 @@ export class DeserializedDetailEffects {
           this.signTransactionInfoToUnsignedMessages(state.transactionInfos, state.iacContext)
         ])
 
+        this.assertRequestContext(state.contextId)
         return actions.navigationDataLoaded({ mode, title, button, transactions, messages, raw })
-      } catch (error) {
-        // tslint:disable-next-line: no-console
-        console.warn(error)
-
+      } catch {
+        try { this.assertRequestContext(state.contextId) } catch { return actions.operationCancelled() }
         return actions.navigationDataLoadingError({ mode, title, button, raw })
       }
     } else {
@@ -285,188 +268,100 @@ export class DeserializedDetailEffects {
     }
   }
 
-  private async handlePayload(payload: Payload, userInput: { bip39Passphrase?: string; protocol?: ProtocolSymbols }): Promise<Action> {
+  private assertRequestContext(contextId: number): void {
+    if (contextId === undefined || this.pageContextId !== contextId) throw new Error('The signing request is closed.')
+    this.access.assertContext(contextId)
+  }
+
+  private async handlePayload(payload: Payload, userInput: actions.UserInput): Promise<Action> {
+    this.assertRequestContext(userInput.contextId)
     switch (payload.mode) {
-      case Mode.SIGN_TRANSACTION:
-        return this.signTransactions(payload.data, userInput.bip39Passphrase)
-      case Mode.SIGN_MESSAGE:
-        return this.signMessages(payload.data, userInput.bip39Passphrase, userInput.protocol)
-      default:
-        assertNever('handlePayload', payload)
+      case Mode.SIGN_TRANSACTION: return this.signTransactions(payload.data, userInput.contextId)
+      case Mode.SIGN_MESSAGE: return this.signMessages(payload.data, userInput.contextId)
+      default: return assertNever('handlePayload', payload)
     }
   }
 
-  private async signTransactions(unsignedTransactions: DeserializedUnsignedTransaction[], bip39Passphrase: string = ''): Promise<Action> {
+  private async signTransactions(unsignedTransactions: DeserializedUnsignedTransaction[], contextId: number): Promise<Action> {
     try {
-      const signedTransactions: DeserializedSignedTransaction[] = await Promise.all(
-        unsignedTransactions.map(async (transaction: DeserializedUnsignedTransaction): Promise<DeserializedSignedTransaction> => {
-          const signed: string = await this.signTransaction(transaction.wallet, transaction.data, transaction.iacContext, bip39Passphrase)
-
-          return {
-            type: 'signed',
-            id: transaction.id,
-            details: transaction.details,
-            data: {
-              accountIdentifier: transaction.wallet.publicKey,
-              transaction: signed,
-              callbackURL: transaction.data.callbackURL
-            },
-            iacContext: transaction.iacContext,
-            wallet: transaction.wallet,
-            originalProtocolIdentifier: transaction.originalProtocolIdentifier
-          }
-        })
-      )
-
-      return actions.transactionsSigned({ transactions: signedTransactions })
-    } catch (error) {
-      // tslint:disable-next-line: no-console
-      console.warn(error)
-
-      if (error.message?.toLowerCase().startsWith('secret not found')) {
-        return actions.secretNotFound()
-      } else if (error.message?.toLowerCase().startsWith('invalid bip-39 passphrase')) {
-        return actions.invalidBip39Passphrase()
-      }
-
-      return actions.unknownError({ message: typeof error === 'string' ? error : error.message })
+      this.assertRequestContext(contextId)
+      const transactions: DeserializedSignedTransaction[] = await Promise.all(unsignedTransactions.map(async (transaction) => {
+        const signed = await this.signTransaction(transaction.wallet, transaction.data, transaction.iacContext, contextId)
+        return {
+          type: 'signed' as const, id: transaction.id, details: transaction.details,
+          data: { accountIdentifier: transaction.wallet.publicKey, transaction: signed, callbackURL: transaction.data.callbackURL },
+          iacContext: transaction.iacContext, wallet: transaction.wallet, originalProtocolIdentifier: transaction.originalProtocolIdentifier
+        }
+      }))
+      this.assertRequestContext(contextId)
+      return actions.transactionsSigned({ transactions, contextId })
+    } catch {
+      try { this.assertRequestContext(contextId) } catch { return actions.operationCancelled() }
+      return actions.unknownError({ message: 'This signing request does not match the currently opened wallet.' })
     }
   }
 
-  private async signTransaction(
-    wallet: AirGapWallet,
-    transaction: UnsignedTransaction,
-    iacContext: IACContext | undefined,
-    bip39Passphrase: string
-  ): Promise<string> {
-    const secret: MnemonicSecret | undefined = this.secretsService.findByPublicKey(wallet.publicKey)
-    if (secret === undefined) {
-      throw new Error('Secret not found')
-    }
-
-    const entropy: string = await this.secretsService.retrieveEntropyForSecret(secret)
-    const mnemonic: string = bip39.entropyToMnemonic(entropy)
-
-    return this.keyPairService.signWithProtocol(
-      wallet.protocol,
-      transaction,
-      mnemonic,
-      bip39Passphrase,
-      wallet.isExtendedPublicKey,
-      wallet.derivationPath,
-      await this.getChildDerivationPath(wallet.derivationPath, iacContext?.derivationPath)
+  private async signTransaction(wallet: AirGapWallet, transaction: UnsignedTransaction, iacContext: IACContext | undefined, contextId: number): Promise<string> {
+    this.assertRequestContext(contextId)
+    this.access.assertWallet(wallet)
+    const secret = this.access.getCurrentSecret()
+    const entropy = await this.secretsService.retrieveEntropyForSecret(secret)
+    this.assertRequestContext(contextId)
+    this.access.assertWallet(wallet, secret)
+    const childPath = await this.getChildDerivationPath(wallet.derivationPath, iacContext?.derivationPath)
+    this.assertRequestContext(contextId)
+    const result = await this.keyPairService.signWithProtocol(
+      wallet.protocol, transaction, bip39.entropyToMnemonic(entropy), this.access.getPassphrase(secret),
+      wallet.isExtendedPublicKey, wallet.derivationPath, childPath
     )
+    this.assertRequestContext(contextId)
+    return result
   }
 
-  private async signMessages(
-    unsignedMessages: DeserializedUnsignedMessage[],
-    bip39Passphrase: string = '',
-    protocolIdentifier?: ProtocolSymbols
-  ): Promise<Action> {
+  private async signMessages(unsignedMessages: DeserializedUnsignedMessage[], contextId: number): Promise<Action> {
     try {
-      const signedMessages: DeserializedSignedMessage[] = await Promise.all(
-        unsignedMessages.map(async (message: DeserializedUnsignedMessage): Promise<DeserializedSignedMessage> => {
-          const signature: string = await this.signMessage(
-            message.data,
-            message.iacContext,
-            bip39Passphrase,
-            message.wallet,
-            protocolIdentifier
-          )
-
-          return {
-            type: 'signed',
-            id: message.id,
-            protocol: message.protocol ?? protocolIdentifier,
-            data: {
-              message: message.data.message,
-              publicKey: message.data.publicKey,
-              signature,
-              callbackURL: message.data.callbackURL
-            },
-            iacContext: message.iacContext,
-            wallet: message.wallet,
-            originalProtocolIdentifier: message.originalProtocolIdentifier
-          }
-        })
-      )
-
-      return actions.messagesSigned({ messages: signedMessages })
-    } catch (error) {
-      // tslint:disable-next-line: no-console
-      console.warn(error)
-
-      if (error.message?.toLowerCase().startsWith('secret not found')) {
-        return actions.secretNotFound()
-      } else if (error.message?.toLowerCase().startsWith('protocol not found')) {
-        return actions.protocolNotFound()
-      } else if (error.message?.toLowerCase().startsWith('invalid bip-39 passphrase')) {
-        return actions.invalidBip39Passphrase()
-      }
-
-      return actions.unknownError({ message: typeof error === 'string' ? error : error.message })
+      this.assertRequestContext(contextId)
+      const messages: DeserializedSignedMessage[] = await Promise.all(unsignedMessages.map(async (message) => {
+        const signature = await this.signMessage(message.data, message.iacContext, message.wallet, contextId)
+        return {
+          type: 'signed' as const, id: message.id, protocol: message.protocol,
+          data: { message: message.data.message, publicKey: message.wallet.publicKey, signature, callbackURL: message.data.callbackURL },
+          iacContext: message.iacContext, wallet: message.wallet, originalProtocolIdentifier: message.originalProtocolIdentifier
+        }
+      }))
+      this.assertRequestContext(contextId)
+      return actions.messagesSigned({ messages, contextId })
+    } catch {
+      try { this.assertRequestContext(contextId) } catch { return actions.operationCancelled() }
+      return actions.unknownError({ message: 'This message does not match an account in the currently opened wallet.' })
     }
   }
 
-  private async signMessage(
-    message: MessageSignRequest,
-    iacContext: IACContext | undefined,
-    bip39Passphrase: string,
-    wallet?: AirGapWallet,
-    protocolIdentifier?: ProtocolSymbols
-  ): Promise<string> {
-    const secret: MnemonicSecret | undefined =
-      wallet !== undefined
-        ? this.secretsService.findByPublicKey(wallet.publicKey) ?? this.secretsService.getActiveSecret()
-        : this.secretsService.getActiveSecret()
-
-    if (secret === undefined) {
-      throw new Error('Secret not found')
-    }
-
-    const entropy: string = await this.secretsService.retrieveEntropyForSecret(secret)
-    const mnemonic: string = bip39.entropyToMnemonic(entropy)
-
-    if (wallet !== undefined) {
-      return this.keyPairService.signWithProtocol(
-        wallet.protocol,
-        message,
-        mnemonic,
-        bip39Passphrase,
-        wallet.isExtendedPublicKey,
-        wallet.derivationPath,
-        await this.getChildDerivationPath(wallet.derivationPath, iacContext?.derivationPath)
-      )
-    } else {
-      let protocol: ICoinProtocol | undefined
-      try {
-        protocol =
-          protocolIdentifier !== undefined ? await this.protocolService.getProtocol(protocolIdentifier, undefined, false) : undefined
-      } catch (error) {
-        // tslint:disable-next-line: no-console
-        console.warn(error)
-        protocol = undefined
-      }
-
-      if (protocol === undefined) {
-        throw new Error('Protocol not found')
-      }
-
-      return this.keyPairService.signWithProtocol(
-        protocol,
-        message,
-        mnemonic,
-        bip39Passphrase,
-        false,
-        await protocol.getStandardDerivationPath(),
-        await this.getChildDerivationPath(await protocol.getStandardDerivationPath(), iacContext?.derivationPath)
-      )
-    }
+  private async signMessage(message: MessageSignRequest, iacContext: IACContext | undefined, wallet: AirGapWallet | undefined, contextId: number): Promise<string> {
+    this.assertRequestContext(contextId)
+    if (!wallet) throw new Error('Select an account from the currently opened wallet before signing a message.')
+    this.access.assertWallet(wallet)
+    if (message.publicKey && message.publicKey !== wallet.publicKey) throw new Error('The request belongs to another account.')
+    const secret = this.access.getCurrentSecret()
+    const entropy = await this.secretsService.retrieveEntropyForSecret(secret)
+    this.assertRequestContext(contextId)
+    const childPath = await this.getChildDerivationPath(wallet.derivationPath, iacContext?.derivationPath)
+    this.assertRequestContext(contextId)
+    // Bind empty-public-key messages to the explicitly selected current account.
+    const result = await this.keyPairService.signWithProtocol(
+      wallet.protocol, { ...message, publicKey: wallet.publicKey }, bip39.entropyToMnemonic(entropy),
+      this.access.getPassphrase(secret), wallet.isExtendedPublicKey, wallet.derivationPath, childPath
+    )
+    this.assertRequestContext(contextId)
+    return result
   }
 
-  private async navigateWithSignedTransactions(transactions: DeserializedSignedTransaction[]): Promise<void> {
+  private async navigateWithSignedTransactions(transactions: DeserializedSignedTransaction[], contextId: number): Promise<void> {
+    this.assertRequestContext(contextId)
     const messages: IACMessageDefinitionObjectV3[] = await this.generateTransactionIACMessages(transactions)
-    this.interactionService.startInteraction({
+    this.assertRequestContext(contextId)
+    await this.interactionService.startInteraction({
+      contextId,
       operationType: InteractionOperationType.TRANSACTION_BROADCAST,
       iacMessage: messages,
       wallets: transactions.map((transaction: DeserializedSignedTransaction): AirGapWallet => transaction.wallet),
@@ -501,9 +396,12 @@ export class DeserializedDetailEffects {
     return signResponses
   }
 
-  private async navigateWithSignedMessages(messages: DeserializedSignedMessage[]): Promise<void> {
+  private async navigateWithSignedMessages(messages: DeserializedSignedMessage[], contextId: number): Promise<void> {
+    this.assertRequestContext(contextId)
     const iacMessages: IACMessageDefinitionObjectV3[] = await this.generateIACMessages(messages)
-    this.interactionService.startInteraction({
+    this.assertRequestContext(contextId)
+    await this.interactionService.startInteraction({
+      contextId,
       operationType: InteractionOperationType.MESSAGE_SIGN_REQUEST,
       iacMessage: iacMessages,
       messageSignResponse:
@@ -546,8 +444,7 @@ export class DeserializedDetailEffects {
 
         // TODO: find better way to check if `transaction` is a Sapling transaction
         return recipients.some((recipient: string) => recipient.startsWith('zet') || recipient.toLocaleLowerCase() === 'shielded pool')
-      } catch (error) {
-        console.error(error)
+      } catch {
         return false
       }
     }
@@ -577,10 +474,10 @@ export class DeserializedDetailEffects {
       normalizedDerivationPath = `m/${normalizedDerivationPath}`
     }
 
-    if (!normalizedDerivationPath.startsWith(walletDerivationPath)) {
+    if (normalizedDerivationPath !== walletDerivationPath && !normalizedDerivationPath.startsWith(walletDerivationPath + '/')) {
       throw new Error('Derivation paths do not match!')
     }
 
-    return normalizedDerivationPath.slice(walletDerivationPath.length + 1)
+    return normalizedDerivationPath === walletDerivationPath ? undefined : normalizedDerivationPath.slice(walletDerivationPath.length + 1)
   }
 }

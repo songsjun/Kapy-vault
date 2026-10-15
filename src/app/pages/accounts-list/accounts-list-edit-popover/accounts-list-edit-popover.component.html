@@ -6,13 +6,13 @@
     <ion-icon slot="start" name="add"></ion-icon>
     {{ 'accounts-list-edit-popover.add-account_label' | translate }}
   </ion-item>
-  <ion-item button detail="false" (click)="editSecretHandler()">
+  <ion-item *ngIf="canManageSecret" button detail="false" (click)="editSecretHandler()">
     <ion-icon slot="start" name="settings-outline"></ion-icon>
     {{ 'accounts-list-edit-popover.secret-management_label' | translate }}
   </ion-item>
   <ion-item button detail="false" (click)="syncWalletsHandler()">
     <ion-icon slot="start" name="sync-outline"></ion-icon>
-    {{ 'accounts-list-edit-popover.sync-all_label' | translate }}
+    {{ 'wallet-access.sync-branch' | translate }}
   </ion-item>
   <ion-item button detail="false" (click)="deleteViewHandler()">
     <ion-icon slot="start" name="trash-outline"></ion-icon>

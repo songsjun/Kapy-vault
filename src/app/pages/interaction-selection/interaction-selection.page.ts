@@ -8,6 +8,7 @@ import { Store } from '@ngrx/store'
 import { selectTransactionsDetails } from '../deserialized-detail/deserialized-detail.reducer'
 import * as fromDeserializedDetail from '../deserialized-detail/deserialized-detail.reducer'
 import { ContactsService } from 'src/app/services/contacts/contacts.service'
+import { WalletAccessService } from '../../services/wallet-access/wallet-access.service'
 
 @Component({
   selector: 'airgap-interaction-selection',
@@ -24,7 +25,8 @@ export class InteractionSelectionPage implements OnInit {
     private readonly storageService: VaultStorageService,
     private readonly interactionService: InteractionService,
     private readonly contactService: ContactsService,
-    private store: Store<fromDeserializedDetail.State>
+    private store: Store<fromDeserializedDetail.State>,
+    private readonly access: WalletAccessService
   ) {}
 
   async ngOnInit() {
@@ -46,7 +48,9 @@ export class InteractionSelectionPage implements OnInit {
   }
 
   private async goToNextPage(): Promise<void> {
+    this.access.assertContext(this.interactionOptions?.contextId)
     const interactionType = await this.storageService.get(VaultStorageKey.INTERACTION_TYPE)
+    this.access.assertContext(this.interactionOptions.contextId)
     if (interactionType === InteractionType.UNDETERMINED) {
       this.goToInteractionSelectionSettingsPage(this.interactionOptions)
     } else {

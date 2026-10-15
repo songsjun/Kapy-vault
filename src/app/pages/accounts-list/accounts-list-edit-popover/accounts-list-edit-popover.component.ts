@@ -6,6 +6,7 @@ import { Component } from '@angular/core'
   styleUrls: ['./accounts-list-edit-popover.component.scss']
 })
 export class AccountsListEditPopoverComponent {
+  public canManageSecret: boolean = false
   private readonly onClickSyncWallets: Function
   private readonly onClickToggleDeleteView: Function
   private readonly onClickAddWallet: Function

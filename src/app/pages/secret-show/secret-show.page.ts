@@ -19,6 +19,8 @@ import { NavigationService } from '../../services/navigation/navigation.service'
 })
 export class SecretShowPage {
   public readonly secret: MnemonicSecret
+  private sourceSecret?: MnemonicSecret
+  private readonly unregisterCleanup: () => void
   public readonly startTime: Date = new Date()
 
   public lifehashData: string | undefined
@@ -39,14 +41,26 @@ export class SecretShowPage {
     private readonly lifehashService: LifehashService,
     private readonly storageService: VaultStorageService
   ) {
-    this.secret = this.navigationService.getState().secret
+    this.sourceSecret = this.navigationService.getState().secret
+    this.navigationService.assertSecretDisplay(this.sourceSecret)
+    this.secret = new MnemonicSecret(this.sourceSecret.secretHex, this.sourceSecret.label)
+    this.unregisterCleanup = this.navigationService.registerSensitiveCleanup(() => {
+      clearTimeout(this.timeout)
+      this.isBlurred = true
+      this.lifehashData = undefined
+      this.secret.secretHex = ''
+      this.sourceSecret = undefined
+    })
   }
 
   public async ionViewDidEnter(): Promise<void> {
+    this.navigationService.assertSecretDisplay(this.sourceSecret)
     this.deviceService.enableScreenshotProtection({ routeBack: 'secret-setup' })
     const matches = this.secret.fingerprint ? this.secret.fingerprint.match(/.{1,2}/g) : null
     const bytes = matches ? new Uint8Array(matches.map((byte) => parseInt(byte, 16))) : new Uint8Array()
-    this.lifehashData = await this.lifehashService.generateLifehash(bytes)
+    const lifehash = await this.lifehashService.generateLifehash(bytes)
+    this.navigationService.assertSecretDisplay(this.sourceSecret)
+    this.lifehashData = lifehash
   }
 
   public ionViewWillLeave(): void {
@@ -56,6 +70,7 @@ export class SecretShowPage {
   public timeout: NodeJS.Timer
 
   changeBlur() {
+    this.navigationService.assertSecretDisplay(this.sourceSecret)
     this.isBlurred = !this.isBlurred
 
     if (this.timeout) {
@@ -68,6 +83,7 @@ export class SecretShowPage {
   }
 
   public goToValidateSecret(): void {
+    this.navigationService.assertSecretDisplay(this.sourceSecret)
     if (this.startTime.getTime() + SHOW_SECRET_MIN_TIME_IN_SECONDS * 1000 > new Date().getTime()) {
       this.translateService
         .get([
@@ -79,6 +95,7 @@ export class SecretShowPage {
         ])
         .pipe(first())
         .subscribe(async (values: string[]) => {
+          this.navigationService.assertSecretDisplay(this.sourceSecret)
           const title: string = values['secret-show.too-fast_alert.title']
           const heading: string = values['secret-show.too-fast_alert.heading']
           const text: string = values['secret-show.too-fast_alert.text']
@@ -90,12 +107,20 @@ export class SecretShowPage {
             message: `${heading} <br/> ${text} <br/> ${waitLabelP1} <strong>${SHOW_SECRET_MIN_TIME_IN_SECONDS.toString()}${waitLabelP2}</strong>`,
             buttons: ['Okay']
           })
+          this.navigationService.assertSecretDisplay(this.sourceSecret)
           alert.present().catch(handleErrorLocal(ErrorCategory.IONIC_ALERT))
         })
     } else {
       this.navigationService
-        .routeWithState('secret-validate', { secret: this.secret })
+        .routeWithState('secret-validate', { secret: this.sourceSecret })
         .catch(handleErrorLocal(ErrorCategory.IONIC_NAVIGATION))
     }
+  }
+
+  public ngOnDestroy(): void {
+    this.unregisterCleanup()
+    clearTimeout(this.timeout)
+    this.secret.secretHex = ''
+    this.sourceSecret = undefined
   }
 }

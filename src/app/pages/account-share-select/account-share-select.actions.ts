@@ -19,15 +19,15 @@ export const alertDismissed = createAction(`[${featureName}] Alert Dismissed`, p
 
 export const migrationAlertAccepted = createAction(
   `[${featureName}] Migration Alert Accepted`,
-  props<{ shareUrl: IACMessageDefinitionObjectV3[] }>()
+  props<{ shareUrl: IACMessageDefinitionObjectV3[]; contextId: number }>()
 )
 
 /**************** Internal ****************/
 
 export const walletsNotMigrated = createAction(`[${featureName}] Wallets Not Migrated`)
 
-export const shareUrlGenerated = createAction(`[${featureName}] Share URL Generated`, props<{ shareUrl: IACMessageDefinitionObjectV3[] }>())
+export const shareUrlGenerated = createAction(`[${featureName}] Share URL Generated`, props<{ shareUrl: IACMessageDefinitionObjectV3[]; contextId: number }>())
 export const shareUrlGeneratedExcludedLegacy = createAction(
   `[${featureName}] Share URL Generated (Legacy Accounts Excluded)`,
-  props<{ shareUrl: IACMessageDefinitionObjectV3[] }>()
+  props<{ shareUrl: IACMessageDefinitionObjectV3[]; contextId: number }>()
 )

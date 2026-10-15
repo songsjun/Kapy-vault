@@ -4,6 +4,7 @@ import { ErrorCategory, handleErrorLocal } from 'src/app/services/error-handler/
 import { NavigationService } from 'src/app/services/navigation/navigation.service'
 import { SecretsService } from 'src/app/services/secrets/secrets.service'
 import * as bip39 from 'bip39'
+import { DefaultSecretAccess } from '../../services/navigation/default-secret-access'
 
 @Component({
   selector: 'airgap-social-recovery-generate-setup',
@@ -15,6 +16,7 @@ export class SocialRecoveryGenerateSetupPage {
   public numberOfShares: number = -1
   public numberOfRequiredShares: number = -1
   private readonly secret: MnemonicSecret
+  private readonly access: DefaultSecretAccess
 
   get numberSharesArray(): number[] {
     const arr = []
@@ -25,6 +27,7 @@ export class SocialRecoveryGenerateSetupPage {
   }
   constructor(private readonly secretService: SecretsService, private readonly navigationService: NavigationService) {
     this.secret = this.navigationService.getState().secret
+    this.access = new DefaultSecretAccess(this.navigationService, this.secret, () => { this.state = 0 })
   }
 
   public setNumberOfShares(i: number): void {
@@ -39,6 +42,7 @@ export class SocialRecoveryGenerateSetupPage {
   }
 
   nextState() {
+    this.access.assert()
     if (this.state === 0) {
       this.state++
       return
@@ -46,6 +50,7 @@ export class SocialRecoveryGenerateSetupPage {
       this.secretService
         .retrieveEntropyForSecret(this.secret)
         .then((entropy) => {
+          this.access.assert()
           const shares: string[] = MnemonicSecret.generateSocialRecover(
             bip39.entropyToMnemonic(entropy),
             this.numberOfShares,
@@ -60,4 +65,6 @@ export class SocialRecoveryGenerateSetupPage {
         })
     }
   }
+  public ionViewWillEnter(): void { this.access.assert() }
+  public ngOnDestroy(): void { this.access.dispose() }
 }

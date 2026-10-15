@@ -6,6 +6,7 @@ import { DeviceService } from '../../services/device/device.service'
 import { ErrorCategory, handleErrorLocal } from '../../services/error-handler/error-handler.service'
 import { NavigationService } from '../../services/navigation/navigation.service'
 import { SecretsService } from '../../services/secrets/secrets.service'
+import { DefaultSecretAccess } from '../../services/navigation/default-secret-access'
 
 @Component({
   selector: 'airgap-social-recovery-setup',
@@ -16,6 +17,7 @@ export class SocialRecoverySetupPage {
   public numberOfShares: number = 3
   public numberOfRequiredShares: number = 2
   private readonly secret: MnemonicSecret
+  private readonly access: DefaultSecretAccess
 
   constructor(
     private readonly secretService: SecretsService,
@@ -23,9 +25,11 @@ export class SocialRecoverySetupPage {
     private readonly navigationService: NavigationService
   ) {
     this.secret = this.navigationService.getState().secret
+    this.access = new DefaultSecretAccess(this.navigationService, this.secret, () => undefined)
   }
 
   public ionViewDidEnter(): void {
+    this.access.assert()
     this.deviceService.setSecureWindow()
   }
 
@@ -49,9 +53,11 @@ export class SocialRecoverySetupPage {
   }
 
   public next(): void {
+    this.access.assert()
     this.secretService
       .retrieveEntropyForSecret(this.secret)
       .then((entropy) => {
+        this.access.assert()
         const shares: string[] = MnemonicSecret.generateSocialRecover(
           bip39.entropyToMnemonic(entropy),
           this.numberOfShares,
@@ -65,4 +71,5 @@ export class SocialRecoverySetupPage {
         console.warn(error)
       })
   }
+  public ngOnDestroy(): void { this.access.dispose() }
 }

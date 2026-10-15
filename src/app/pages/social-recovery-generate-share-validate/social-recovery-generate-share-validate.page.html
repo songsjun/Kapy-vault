@@ -22,7 +22,7 @@
       </div>
       <h2>Tap each word to match the correct order</h2>
       <airgap-verify-key-alt
-        *ngIf="shares"
+        *ngIf="shares?.length"
         #verify
         [secret]="shares[currentShare]"
         (onComplete)="onComplete($event)"

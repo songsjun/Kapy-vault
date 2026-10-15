@@ -3,6 +3,7 @@ import { ActivatedRoute } from '@angular/router'
 import { MnemonicSecret } from 'src/app/models/secret'
 import { ErrorCategory, handleErrorLocal } from 'src/app/services/error-handler/error-handler.service'
 import { NavigationService } from 'src/app/services/navigation/navigation.service'
+import { DefaultSecretAccess } from '../../services/navigation/default-secret-access'
 
 @Component({
   selector: 'airgap-social-recovery-generate-share-show',
@@ -14,6 +15,7 @@ export class SocialRecoveryGenerateShareShowPage {
   public shares: string[]
   private secret: MnemonicSecret
   private required: number
+  private access: DefaultSecretAccess
 
   get currentShares(): string[] {
     if (this.shares && this.currentShare < this.shares.length) {
@@ -24,14 +26,17 @@ export class SocialRecoveryGenerateShareShowPage {
 
   constructor(private readonly navigationService: NavigationService, route: ActivatedRoute) {
     route.params.subscribe((_) => {
+      this.access?.dispose()
       this.currentShare = this.navigationService.getState().currentShare
       this.shares = this.navigationService.getState().shares
       this.secret = this.navigationService.getState().secret
       this.required = this.navigationService.getState().required
+      this.access = new DefaultSecretAccess(this.navigationService, this.secret, () => { this.shares = [] })
     })
   }
 
   prev() {
+    this.access.assert()
     if (this.currentShare <= 0)
       this.navigationService
         .routeWithState('/social-recovery-generate-rules', {
@@ -52,6 +57,7 @@ export class SocialRecoveryGenerateShareShowPage {
   }
 
   next() {
+    this.access.assert()
     this.navigationService
       .routeWithState('/social-recovery-generate-share-validate', {
         shares: this.shares,
@@ -61,4 +67,6 @@ export class SocialRecoveryGenerateShareShowPage {
       })
       .catch(handleErrorLocal(ErrorCategory.IONIC_NAVIGATION))
   }
+  public ionViewWillEnter(): void { this.access.assert() }
+  public ngOnDestroy(): void { this.access?.dispose(); this.shares = [] }
 }

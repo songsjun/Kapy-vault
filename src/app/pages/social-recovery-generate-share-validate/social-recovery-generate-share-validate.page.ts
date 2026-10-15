@@ -5,6 +5,8 @@ import { MnemonicSecret } from 'src/app/models/secret'
 import { ErrorCategory, handleErrorLocal } from 'src/app/services/error-handler/error-handler.service'
 import { NavigationService } from 'src/app/services/navigation/navigation.service'
 import { SecretsService } from 'src/app/services/secrets/secrets.service'
+import { DefaultSecretAccess } from '../../services/navigation/default-secret-access'
+import { VerifyKeyAltComponent } from '../../components/verify-key-alt/verify-key-alt.component'
 
 @Component({
   selector: 'airgap-social-recovery-generate-share-validate',
@@ -13,6 +15,7 @@ import { SecretsService } from 'src/app/services/secrets/secrets.service'
 })
 export class SocialRecoveryGenerateShareValidatePage {
   @ViewChild(IonContent) content: IonContent
+  @ViewChild(VerifyKeyAltComponent) verify: VerifyKeyAltComponent
 
   public validated: boolean = false
   public currentShare: number = 0
@@ -24,6 +27,7 @@ export class SocialRecoveryGenerateShareValidatePage {
   public selectedWordIndex: number | null = null
   private secret: MnemonicSecret
   private required: number
+  private access: DefaultSecretAccess
 
   get currentShares(): string[] {
     if (this.shares && this.currentShare < this.shares.length) {
@@ -38,10 +42,12 @@ export class SocialRecoveryGenerateShareValidatePage {
     route: ActivatedRoute
   ) {
     route.params.subscribe((_) => {
+      this.access?.dispose()
       this.currentShare = this.navigationService.getState().currentShare
       this.shares = this.navigationService.getState().shares
       this.secret = this.navigationService.getState().secret
       this.required = this.navigationService.getState().required
+      this.access = new DefaultSecretAccess(this.navigationService, this.secret, () => this.clearSensitiveFields())
     })
   }
 
@@ -54,6 +60,7 @@ export class SocialRecoveryGenerateShareValidatePage {
   }
 
   prev() {
+    this.access.assert()
     this.navigationService
       .routeWithState('/social-recovery-generate-share-show', {
         shares: this.shares,
@@ -65,6 +72,7 @@ export class SocialRecoveryGenerateShareValidatePage {
   }
 
   next() {
+    this.access.assert()
     if (this.currentShare < this.shares.length - 1)
       this.navigationService
         .routeWithState('/social-recovery-generate-share-show', {
@@ -79,9 +87,27 @@ export class SocialRecoveryGenerateShareValidatePage {
       this.secretsService
         .addOrUpdateSecret(this.secret)
         .then(() => {
-          this.navigationService.route('/social-recovery-generate-finish').catch(handleErrorLocal(ErrorCategory.IONIC_NAVIGATION))
+          this.access.assert()
+          this.navigationService.routeWithState('/social-recovery-generate-finish', {
+            secret: this.secret, shares: this.shares, required: this.required
+          }).catch(handleErrorLocal(ErrorCategory.IONIC_NAVIGATION))
         })
         .catch(handleErrorLocal(ErrorCategory.SECURE_STORAGE))
     }
   }
+
+  private clearSensitiveFields(): void {
+    this.shares = []
+    this.currentWords = []
+    this.promptedWords = []
+    this.validated = false
+    if (this.verify) {
+      this.verify.secret = ''
+      this.verify.splittedSecret = []
+      this.verify.currentWords = []
+      this.verify.promptedWords = []
+    }
+  }
+  public ionViewWillEnter(): void { this.access.assert() }
+  public ngOnDestroy(): void { this.access?.dispose(); this.clearSensitiveFields() }
 }

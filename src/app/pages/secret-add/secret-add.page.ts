@@ -9,6 +9,7 @@ import { ErrorCategory, handleErrorLocal } from '../../services/error-handler/er
 import { NavigationService } from '../../services/navigation/navigation.service'
 import { SecretsService } from '../../services/secrets/secrets.service'
 import { UiEventService } from '@airgap/angular-core'
+import { WalletAccessService } from '../../services/wallet-access/wallet-access.service'
 
 @Component({
   selector: 'airgap-secret-add',
@@ -23,6 +24,14 @@ export class SecretAddPage {
   public secret: MnemonicSecret
 
   public lifehashData: string | undefined
+  public defaultPassword: string = ''
+  public confirmPassword: string = ''
+  public saving: boolean = false
+  private left: boolean = false
+
+  public get canSave(): boolean {
+    return !!this.secret?.label?.length && this.defaultPassword.length > 0 && this.defaultPassword === this.confirmPassword && !this.saving
+  }
 
   public isAdvancedMode$: Observable<boolean> = this.storageService
     .subscribe(VaultStorageKey.ADVANCED_MODE_TYPE)
@@ -34,7 +43,8 @@ export class SecretAddPage {
     private readonly platform: Platform,
     private readonly lifehashService: LifehashService,
     private readonly storageService: VaultStorageService,
-    private readonly uiEventService: UiEventService
+    private readonly uiEventService: UiEventService,
+    private readonly walletAccess: WalletAccessService
   ) {
     if (this.navigationService.getState()) {
       this.isGenerating = this.navigationService.getState().isGenerating
@@ -52,23 +62,64 @@ export class SecretAddPage {
   }
 
   public async confirm(): Promise<void> {
-    try {
-      await this.secretsService.addOrUpdateSecret(this.secret)
-    } catch (error) {
-      handleErrorLocal(ErrorCategory.SECURE_STORAGE)(error)
-
-      if (error.message !== 'Already added secret' /* a workaround to avoid prompting 2 alerts */) {
-        await this.showErrorAlert()
-      } else {
-        this.navigationService.routeToSecretsTab()
-      }
+    if (!this.canSave || this.left) {
       return
     }
+    this.saving = true
+    try {
+      await this.secretsService.createSecret(this.secret, this.defaultPassword)
+    } catch (error) {
+      if (this.left) {
+        return
+      }
+      handleErrorLocal(ErrorCategory.SECURE_STORAGE)(error)
 
+      if (error.message !== 'Already added secret') {
+        await this.showErrorAlert()
+      } else {
+        const alert = await this.uiEventService.getTranslatedAlert({
+          header: 'wallet-access.duplicate-title',
+          message: 'wallet-access.duplicate-message',
+          buttons: [{ text: 'wallet-access.ok', handler: () => this.navigationService.routeToSecretsTab() }]
+        })
+        if (!this.left) {
+          await alert.present()
+        }
+      }
+      return
+    } finally {
+      this.defaultPassword = ''
+      this.confirmPassword = ''
+      this.saving = false
+    }
+
+    if (this.left) {
+      return
+    }
     this.navigationService.routeWithStateAsRoot('/account-add', { secret: this.secret }).catch(handleErrorLocal(ErrorCategory.IONIC_NAVIGATION))
   }
 
+  public ionViewWillEnter(): void {
+    this.left = false
+  }
+
+  public ionViewDidLeave(): void {
+    this.left = true
+    if (this.saving) {
+      this.walletAccess.lock()
+    }
+    this.defaultPassword = ''
+    this.confirmPassword = ''
+  }
+
+  public ngOnDestroy(): void {
+    this.ionViewDidLeave()
+  }
+
   public async togglePasscode(): Promise<void> {
+    if (this.saving) {
+      return
+    }
     this.secret.isParanoia = !this.secret.isParanoia
   }
 

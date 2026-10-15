@@ -7,6 +7,7 @@ import { NavigationService } from 'src/app/services/navigation/navigation.servic
 import { AdvancedModeType, VaultStorageKey, VaultStorageService } from '../../services/storage/storage.service'
 import { Observable } from 'rxjs'
 import { map } from 'rxjs/operators'
+import { DefaultSecretAccess } from '../../services/navigation/default-secret-access'
 
 @Component({
   selector: 'airgap-bip85-generate',
@@ -15,6 +16,7 @@ import { map } from 'rxjs/operators'
 })
 export class Bip85GeneratePage {
   public secret: MnemonicSecret
+  private access: DefaultSecretAccess
 
   public mnemonicLength: '12' | '18' | '24' = '24'
 
@@ -35,10 +37,15 @@ export class Bip85GeneratePage {
   ) {
     if (this.navigationService.getState()) {
       this.secret = this.navigationService.getState().secret
+      this.access = new DefaultSecretAccess(this.navigationService, this.secret, () => {
+        this.bip39Passphrase = ''
+        this.revealBip39Passphrase = false
+      })
     }
   }
 
   public async generateChildSeed() {
+    this.access.assert()
     if (this.bip39Passphrase.length > 0 && this.isAdvancedMode) {
       const alert = await this.alertController.create({
         header: this.translateService.instant('bip85-generate.alert.header'),
@@ -68,6 +75,7 @@ export class Bip85GeneratePage {
           }
         ]
       })
+      this.access.assert()
       alert.present()
     } else {
       this.navigateToNextPage()
@@ -91,6 +99,7 @@ export class Bip85GeneratePage {
   }
 
   private async navigateToNextPage() {
+    this.access.assert()
     this.navigationService
       .routeWithState('/bip85-show', {
         secret: this.secret,
@@ -100,4 +109,7 @@ export class Bip85GeneratePage {
       })
       .catch(handleErrorLocal(ErrorCategory.IONIC_NAVIGATION))
   }
+
+  public ionViewWillEnter(): void { this.access.assert() }
+  public ngOnDestroy(): void { this.access?.dispose(); this.bip39Passphrase = '' }
 }

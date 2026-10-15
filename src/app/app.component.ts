@@ -25,20 +25,20 @@ import { TezosModule, TezosSaplingExternalMethodProvider, TezosShieldedTezProtoc
 import { AcurastModule } from '@airgap/acurast'
 import { StellarModule } from '@airgap/stellar'
 import { HttpClient } from '@angular/common/http'
-import { AfterViewInit, Component, Inject, NgZone } from '@angular/core'
+import { AfterViewInit, Component, Inject, NgZone, OnDestroy } from '@angular/core'
 import { AppPlugin, URLOpenListenerEvent } from '@capacitor/app'
+import { PluginListenerHandle } from '@capacitor/core'
 import { SplashScreenPlugin } from '@capacitor/splash-screen'
 import { StatusBarPlugin, Style } from '@capacitor/status-bar'
 import { ModalController, Platform } from '@ionic/angular'
 import { TranslateService } from '@ngx-translate/core'
-import { first } from 'rxjs/operators'
+import { Subscription } from 'rxjs'
 import { register } from 'swiper/element/bundle'
 
 import { SecurityUtilsPlugin } from './capacitor-plugins/definitions'
 import { SECURITY_UTILS_PLUGIN } from './capacitor-plugins/injection-tokens'
 import { DEEPLINK_VAULT_ADD_ACCOUNT, DEEPLINK_VAULT_PREFIX } from './constants/constants'
 import { ExposedPromise, exposedPromise } from './functions/exposed-promise'
-import { MnemonicSecret } from './models/secret'
 import { ErrorCategory, handleErrorLocal } from './services/error-handler/error-handler.service'
 import { IACService } from './services/iac/iac.service'
 import { VaultModulesService } from './services/modules/modules.service'
@@ -49,6 +49,7 @@ import { StartupChecksService } from './services/startup-checks/startup-checks.s
 import { LanguagesType, VaultStorageKey, VaultStorageService } from './services/storage/storage.service'
 import { Router } from '@angular/router'
 import { EdgeToEdge } from '@capawesome/capacitor-android-edge-to-edge-support'
+import { WalletAccessService } from './services/wallet-access/wallet-access.service'
 
 declare let window: Window & { airGapHasStarted: boolean }
 
@@ -64,10 +65,12 @@ register()
   selector: 'airgap-root',
   templateUrl: 'app.component.html'
 })
-export class AppComponent implements AfterViewInit {
+export class AppComponent implements AfterViewInit, OnDestroy {
   // Sometimes the deeplink was registered before the root page was set
   // This resulted in the root page "overwriting" the deep-linked page
   public isInitialized: ExposedPromise<void> = exposedPromise<void>()
+  private readonly listenerHandles: PluginListenerHandle[] = []
+  private readonly subscriptions = new Subscription()
 
   constructor(
     private readonly platform: Platform,
@@ -84,6 +87,7 @@ export class AppComponent implements AfterViewInit {
     private readonly moduleService: VaultModulesService,
     private readonly router: Router,
     private readonly modalController: ModalController,
+    private readonly walletAccess: WalletAccessService,
     @Inject(APP_PLUGIN) private readonly app: AppPlugin,
     @Inject(SECURITY_UTILS_PLUGIN) private readonly securityUtils: SecurityUtilsPlugin,
     @Inject(SPLASH_SCREEN_PLUGIN) private readonly splashScreen: SplashScreenPlugin,
@@ -91,6 +95,9 @@ export class AppComponent implements AfterViewInit {
   ) {
     // We set the app as started so no "error alert" will be shown in case the app fails to load. See error-check.js for details.
     window.airGapHasStarted = true
+    this.subscriptions.add(this.secretsService.getSecretsObservable().subscribe((secrets) => {
+      this.navigationService.setPersistedSecretIds(secrets.map((secret) => secret.id))
+    }))
     this.initializeApp().catch(handleErrorLocal(ErrorCategory.OTHER))
   }
 
@@ -120,6 +127,15 @@ export class AppComponent implements AfterViewInit {
 
   public async ngAfterViewInit(): Promise<void> {
     await this.platform.ready()
+    // iOS inactive and Android onPause can be caused by biometric authentication.
+    // Lock only on the native event that reports actual backgrounding on each OS.
+    if (this.platform.is('hybrid') && this.platform.is('ios')) {
+      this.listenerHandles.push(await this.app.addListener('pause', () => this.closeWalletForBackground()))
+    } else if (this.platform.is('hybrid') && this.platform.is('android')) {
+      this.listenerHandles.push(await this.app.addListener('appStateChange', ({ isActive }) => {
+        if (!isActive) { this.closeWalletForBackground() }
+      }))
+    }
     if (this.platform.is('android')) {
       this.platform.backButton.subscribeWithPriority(-1, async () => {
         if (this.modalController.getTop()) {
@@ -133,39 +149,52 @@ export class AppComponent implements AfterViewInit {
         }
       })
     }
-    this.app.addListener('appUrlOpen', async (data: URLOpenListenerEvent) => {
+    this.listenerHandles.push(await this.app.addListener('appUrlOpen', async (data: URLOpenListenerEvent) => {
       await this.isInitialized.promise
       if (data.url === DEEPLINK_VAULT_PREFIX || data.url.startsWith(DEEPLINK_VAULT_ADD_ACCOUNT)) {
-        this.secretsService
-          .getSecretsObservable()
-          .pipe(first())
-          .subscribe((secrets: MnemonicSecret[]) => {
-            if (secrets.length > 0) {
-              this.ngZone
-                .run(async () => {
-                  this.navigationService.routeToSecretsTab().catch(handleErrorLocal(ErrorCategory.IONIC_NAVIGATION))
-
-                  const protocol: string = data.url.substr(DEEPLINK_VAULT_ADD_ACCOUNT.length)
-                  if (protocol.length > 0) {
-                    this.navigationService
-                      .routeWithState('account-add', { protocol, secret: secrets[0] })
-                      .catch(handleErrorLocal(ErrorCategory.IONIC_NAVIGATION))
-                  } else {
-                    this.navigationService.route('account-add').catch(handleErrorLocal(ErrorCategory.IONIC_NAVIGATION))
-                  }
-                })
-                .catch(handleErrorLocal(ErrorCategory.OTHER))
-            }
-          })
+        // A deeplink cannot choose the first stored Secret or bypass its wallet password.
+        this.ngZone.run(() => this.navigationService.routeToSecretsTab(true))
+          .catch(handleErrorLocal(ErrorCategory.IONIC_NAVIGATION))
       } else {
+        if (!this.walletAccess.isUnlocked()) {
+          await this.navigationService.routeToSecretsTab(true)
+          return
+        }
+        const epoch = this.walletAccess.getContextId()
         this.ngZone.run(async () => {
           // We defer this call because on iOS the app would sometimes get stuck on a black screen when handling deeplinks.
-          defer(() =>
+          defer(() => {
+            try { this.walletAccess.assertContext(epoch) } catch (_) { return }
             this.iacService.handleRequest(data.url, IACMessageTransport.DEEPLINK).catch(handleErrorLocal(ErrorCategory.SCHEME_ROUTING))
-          )
+          })
         })
       }
-    })
+    }))
+  }
+
+  private closeWalletForBackground(): void {
+    this.walletAccess.lock()
+    this.navigationService.clearSensitiveState()
+    const operation = this.walletAccess.getOperationId()
+    const isCurrent = () => this.walletAccess.getOperationId() === operation
+    this.ngZone.run(async () => {
+      // Dismiss a pending selector or management modal before discarding its page stack.
+      let modal = await this.modalController.getTop()
+      if (!isCurrent()) { return }
+      while (modal) {
+        await modal.dismiss()
+        if (!isCurrent()) { return }
+        modal = await this.modalController.getTop()
+        if (!isCurrent()) { return }
+      }
+      if (!isCurrent()) { return }
+      await this.navigationService.routeToSecretsTab(true)
+    }).catch(handleErrorLocal(ErrorCategory.IONIC_NAVIGATION))
+  }
+
+  public ngOnDestroy(): void {
+    this.subscriptions.unsubscribe()
+    this.listenerHandles.forEach((handle) => handle.remove())
   }
 
   private async initializeTranslations(): Promise<void> {

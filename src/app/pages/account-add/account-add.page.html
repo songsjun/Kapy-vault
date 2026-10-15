@@ -7,7 +7,8 @@
   </ion-toolbar>
 </ion-header>
 
-<ion-content class="ion-padding">
+<ion-content class="ion-padding" *ngIf="canAdd">
+  <p>{{ 'wallet-access.account-branch' | translate }}</p>
   <ion-list lines="none" class="ion-padding-bottom">
     <ion-item detail="false" class="ion-no-padding" *ngFor="let protocol of protocolList">
       <ion-avatar slot="start" class="ion-align-items-center">
@@ -57,20 +58,7 @@
         <ion-checkbox [(ngModel)]="singleSelectedProtocol.isHDWallet" (ionChange)="toggleHDWallet()" slot="end"></ion-checkbox>
       </ion-item>
 
-      <ng-container *ngIf="isBip39PassphraseEnabled">
-        <ion-item class="ion-no-padding" *ngIf="isBip39PassphraseEnabled" lines="full">
-          <ion-label position="stacked" color="primary">BIP-39 Passphrase</ion-label>
-          <ion-input
-            [type]="revealBip39Passphrase ? 'text' : 'password'"
-            [(ngModel)]="bip39Passphrase"
-            placeholder="BIP-39 Passphrase"
-          ></ion-input>
-        </ion-item>
-<ion-item class="ion-no-padding ion-margin-bottom">
-          Reveal Passphrase
-          <ion-checkbox [(ngModel)]="revealBip39Passphrase" slot="end"></ion-checkbox>
-        </ion-item>
-      </ng-container>
+
     </ng-container>
   </ion-list>
 
@@ -88,7 +76,7 @@
   </ion-card>
 
   <ion-fab vertical="bottom" horizontal="end" slot="fixed">
-    <ion-button [disabled]="!formValid" color="primary" shape="round" (click)="addWallet()">
+    <ion-button [disabled]="!formValid || adding" color="primary" shape="round" (click)="addWallet()">
       {{ 'wallet-select-coins.create_label' | translate }}
     </ion-button>
   </ion-fab>

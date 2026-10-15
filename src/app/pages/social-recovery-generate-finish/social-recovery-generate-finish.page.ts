@@ -1,6 +1,7 @@
 import { Component } from '@angular/core'
 import { ErrorCategory, handleErrorLocal } from 'src/app/services/error-handler/error-handler.service'
 import { NavigationService } from 'src/app/services/navigation/navigation.service'
+import { DefaultSecretAccess } from '../../services/navigation/default-secret-access'
 
 @Component({
   selector: 'airgap-social-recovery-generate-finish',
@@ -9,7 +10,8 @@ import { NavigationService } from 'src/app/services/navigation/navigation.servic
 })
 export class SocialRecoveryGenerateFinishPage {
   private required: number
-  private readonly shares: string[]
+  private shares: string[]
+  private readonly access: DefaultSecretAccess
 
   get numberOfShares(): number {
     return this.shares.length
@@ -22,9 +24,13 @@ export class SocialRecoveryGenerateFinishPage {
   constructor(private readonly navigationService: NavigationService) {
     this.shares = this.navigationService.getState().shares
     this.required = this.navigationService.getState().required
+    this.access = new DefaultSecretAccess(this.navigationService, this.navigationService.getState().secret, () => { this.shares = [] })
   }
 
   next() {
+    this.access.assert()
     this.navigationService.route('/tabs/tab-settings').catch(handleErrorLocal(ErrorCategory.IONIC_NAVIGATION))
   }
+  public ionViewWillEnter(): void { this.access.assert() }
+  public ngOnDestroy(): void { this.access.dispose(); this.shares = [] }
 }

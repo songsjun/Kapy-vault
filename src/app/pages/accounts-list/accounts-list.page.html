@@ -5,16 +5,16 @@
         <ion-icon name="arrow-back"></ion-icon>
       </ion-button>
     </ion-buttons>
-    <ion-title *ngIf="secret">{{ 'tab-wallets.title' | translate }} {{ secret.label }}</ion-title>
+    <ion-title *ngIf="canView">{{ 'tab-wallets.title' | translate }} {{ secret.label }}</ion-title>
 
-    <ng-container *ngIf="deleteView; else threeDotMenu">
+    <ng-container *ngIf="canView && deleteView; else threeDotMenu">
       <ion-buttons slot="primary">
         <ion-button (click)="toggleDeleteView()">{{ 'tab-wallets.cancel_label' | translate }}</ion-button>
       </ion-buttons>
     </ng-container>
 
     <ng-template #threeDotMenu>
-      <ion-buttons slot="primary">
+      <ion-buttons slot="primary" *ngIf="canView">
         <ion-button (click)="presentEditPopover($event)">
           <ion-icon slot="icon-only" name="ellipsis-vertical"></ion-icon>
         </ion-button>
@@ -23,7 +23,7 @@
   </ion-toolbar>
 </ion-header>
 
-<ion-content *ngIf="wallets$" class="ion-padding-horizontal">
+<ion-content *ngIf="canView" class="ion-padding-horizontal">
   <ng-container *ngIf="wallets$ && (wallets$ | async | walletFilter: { status: AirGapWalletStatus.ACTIVE } | async) as wallets">
     <ion-list>
       <ng-container *ngFor="let wallet of wallets">

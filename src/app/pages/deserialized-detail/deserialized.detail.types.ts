@@ -13,14 +13,6 @@ export type Task = 'signTransaction' | 'signMessage' | 'generic'
 
 /**************** Alert ****************/
 
-export interface Bip39PassphraseAlert {
-  type: 'bip39Passphrase'
-}
-
-export interface Bip39PassphraseErrorAlert {
-  type: 'bip39PassphraseError'
-}
-
 export interface SecretNotFoundErrorAlert {
   type: 'secretNotFound'
 }
@@ -30,7 +22,7 @@ export interface UnknownErrorAlert {
   message?: string
 }
 
-export type Alert = Bip39PassphraseAlert | Bip39PassphraseErrorAlert | SecretNotFoundErrorAlert | UnknownErrorAlert
+export type Alert = SecretNotFoundErrorAlert | UnknownErrorAlert
 
 /**************** Modal ****************/
 

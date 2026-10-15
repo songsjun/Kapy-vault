@@ -9,8 +9,6 @@ import * as fromRoot from '../../app.reducers'
 import * as actions from './deserialized-detail.actions'
 import {
   Alert,
-  Bip39PassphraseAlert,
-  Bip39PassphraseErrorAlert,
   DeserializedMessage,
   DeserializedSignedTransaction,
   DeserializedTransaction,
@@ -27,7 +25,6 @@ import {
 
 /**************** STATE ****************/
 
-const MAX_BIP39_PASSPHRASE_TRIES = 1
 export interface FeatureState {
   mode: Mode | undefined
   title: string
@@ -41,7 +38,6 @@ export interface FeatureState {
   transactions: UIResource<DeserializedTransaction[]>
   messages: UIResource<DeserializedMessage[]>
   raw: UIResource<string>
-  bip39PassphraseTries: number
 }
 
 export interface State extends fromRoot.State {
@@ -69,11 +65,11 @@ const initialState: FeatureState = {
     value: undefined,
     status: UIResourceStatus.IDLE
   },
-  bip39PassphraseTries: 0
 }
 
 export const reducer = createReducer(
   initialState,
+  on(actions.viewClosed, actions.operationCancelled, () => initialState),
   on(actions.navigationDataLoading, (state) => ({
     ...state,
     loader: undefined,
@@ -91,7 +87,6 @@ export const reducer = createReducer(
       value: state.raw.value,
       status: UIResourceStatus.LOADING
     },
-    bip39PassphraseTries: 0
   })),
   on(actions.navigationDataLoaded, (state, { mode, title, button, transactions, messages, raw }) => ({
     ...state,
@@ -113,7 +108,6 @@ export const reducer = createReducer(
       value: raw,
       status: UIResourceStatus.SUCCESS
     },
-    bip39PassphraseTries: 0
   })),
   on(actions.navigationDataLoadingError, (state, { mode, title, button, raw }) => ({
     ...state,
@@ -144,7 +138,6 @@ export const reducer = createReducer(
       value: (state.transactions.value ?? []).concat(transactions),
       status: state.transactions.status
     },
-    bip39PassphraseTries: 0
   })),
   on(actions.messagesSigned, (state, { messages }) => ({
     ...state,
@@ -155,19 +148,9 @@ export const reducer = createReducer(
       value: (state.messages.value ?? []).concat(messages),
       status: state.transactions.status
     },
-    bip39PassphraseTries: 0
   })),
   on(actions.loaderDismissed, (state, { id }) => ({
-    ...state,
-    loader:
-      state.loader !== undefined
-        ? {
-            id: state.loader.id,
-            value: state.loader.value,
-            status: id === state.loader.id ? UIActionStatus.HANDLED : state.loader.status,
-            userInput: id === state.loader.id ? {} : state.loader.userInput
-          }
-        : undefined
+    ...state, loader: state.loader?.id === id ? undefined : state.loader
   })),
   on(actions.alertDismissed, (state, { id }) => ({
     ...state,
@@ -193,31 +176,6 @@ export const reducer = createReducer(
           }
         : undefined
   })),
-  on(actions.invalidBip39Passphrase, (state) => {
-    return state.bip39PassphraseTries < MAX_BIP39_PASSPHRASE_TRIES
-      ? {
-          ...state,
-          loader: undefined,
-          alert: {
-            id: generateGUID(),
-            value: { type: 'bip39Passphrase' as Bip39PassphraseAlert['type'] },
-            status: UIActionStatus.PENDING
-          },
-          modal: undefined,
-          bip39PassphraseTries: state.bip39PassphraseTries + 1
-        }
-      : {
-          ...state,
-          loader: undefined,
-          alert: {
-            id: generateGUID(),
-            value: { type: 'bip39PassphraseError' as Bip39PassphraseErrorAlert['type'] },
-            status: UIActionStatus.PENDING
-          },
-          modal: undefined,
-          bip39PassphraseTries: 0
-        }
-  }),
   on(actions.secretNotFound, (state) => ({
     ...state,
     alert: {

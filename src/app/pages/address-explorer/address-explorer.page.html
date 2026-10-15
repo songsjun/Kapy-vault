@@ -7,8 +7,8 @@
   </ion-toolbar>
 </ion-header>
 
-<ion-content class="ion-padding">
-  <ion-segment *ngIf="showChange" (ionChange)="segmentChanged($event)" value="external">
+<ion-content *ngIf="isCurrent" class="ion-padding">
+  <ion-segment *ngIf="showChange" (ionChange)="segmentChanged($event)" [value]="selectedTab">
     <ion-segment-button value="external">
       <ion-label>Receive</ion-label>
     </ion-segment-button>
@@ -46,7 +46,7 @@
     </ion-card-content>
   </ion-card>
 
-  <ion-infinite-scroll threshold="100px" (ionInfinite)="loadData($event)">
+  <ion-infinite-scroll [disabled]="loading || !isCurrent" threshold="100px" (ionInfinite)="loadData($event)">
     <ion-infinite-scroll-content loadingSpinner="bubbles" loadingText="Loading more addresses..."></ion-infinite-scroll-content>
   </ion-infinite-scroll>
 </ion-content>

@@ -64,6 +64,10 @@ export class MnemonicSecret extends Secret {
 
   public wallets: AirGapWallet[]
 
+  // Only a format marker is public. Password verifiers and account configurations
+  // live in native encrypted storage; wallets are populated only while open.
+  public walletAccessVersion?: 1
+
   private readonly bip32 = BIP32Factory(ecc)
 
   private readonly twofactor: string

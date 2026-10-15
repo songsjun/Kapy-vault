@@ -1,5 +1,6 @@
 import { NgModule } from '@angular/core'
 import { PreloadAllModules, RouterModule, Routes } from '@angular/router'
+import { WalletRouteGuard } from './services/navigation/wallet-route.guard'
 
 const routes: Routes = [
   { path: '', loadChildren: () => import('./pages/tabs/tabs.module').then((m) => m.TabsPageModule) },
@@ -292,7 +293,12 @@ const routes: Routes = [
 ]
 
 @NgModule({
-  imports: [RouterModule.forRoot(routes, { preloadingStrategy: PreloadAllModules })],
+  imports: [RouterModule.forRoot(routes.map((route) => ({
+    ...route,
+    canActivate: [WalletRouteGuard],
+    canActivateChild: [WalletRouteGuard],
+    runGuardsAndResolvers: 'always' as const
+  })), { preloadingStrategy: PreloadAllModules })],
   exports: [RouterModule]
 })
 export class AppRoutingModule {}

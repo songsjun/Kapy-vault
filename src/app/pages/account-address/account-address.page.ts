@@ -1,7 +1,7 @@
 import { ClipboardService, DeeplinkService, QRType, UiEventService } from '@airgap/angular-core'
 import { AirGapWallet, MainProtocolSymbols, ProtocolSymbols } from '@airgap/coinlib-core'
 import { IACMessageDefinitionObjectV3 } from '@airgap/serializer'
-import { Component, ViewChild } from '@angular/core'
+import { Component, OnDestroy, ViewChild } from '@angular/core'
 import { Router } from '@angular/router'
 import { IonModal, PopoverController } from '@ionic/angular'
 import { Observable } from 'rxjs'
@@ -17,6 +17,7 @@ import { ShareUrlService } from '../../services/share-url/share-url.service'
 import { isWalletMigrated } from '../../utils/migration'
 
 import { AccountEditPopoverComponent } from './account-edit-popover/account-edit-popover.component'
+import { WalletAccessService } from '../../services/wallet-access/wallet-access.service'
 
 // TODO: add wallet definition into a service
 export const airgapwallet = {
@@ -86,7 +87,17 @@ export interface CompanionApp {
   templateUrl: './account-address.page.html',
   styleUrls: ['./account-address.page.scss']
 })
-export class AccountAddressPage {
+export class AccountAddressPage implements OnDestroy {
+  private contextId: number
+  private revision = 0
+  private active = false
+  private editPopover?: HTMLIonPopoverElement
+  private readonly unregisterCleanup: () => void
+
+  public get canView(): boolean {
+    try { this.assertCurrent(); return true } catch { return false }
+  }
+
   @ViewChild(IonModal) modal: IonModal
 
   public wallet: AirGapWallet
@@ -119,20 +130,63 @@ export class AccountAddressPage {
     private readonly migrationService: MigrationService,
     private readonly deepLinkService: DeeplinkService,
     private readonly storageService: VaultStorageService,
-    private readonly router: Router
+    private readonly router: Router,
+    private readonly access: WalletAccessService
   ) {
-    this.wallet = this.navigationService.getState().wallet
-    this.secret = this.navigationService.getState().secret
-
-    if (!this.wallet) {
-      this.router.navigate(['/'])
-      throw new Error('[AccountAddressPage]: No wallet found! Navigating to home page.')
-    }
+    this.unregisterCleanup = this.navigationService.registerSensitiveCleanup(() => this.clearView())
   }
 
-  async ngOnInit() {
-    this.presentingElement = document.querySelector('.ion-page')
+  public ngOnInit(): void {
+    this.presentingElement = typeof document === 'undefined' ? null : document.querySelector('.ion-page')
+  }
 
+  public ionViewWillEnter(): void {
+    this.clearView()
+    try {
+      const state = this.navigationService.getState()
+      this.contextId = this.access.getContextId()
+      this.wallet = state.wallet
+      this.secret = state.secret
+      this.active = true
+      this.assertCurrent()
+    } catch {
+      this.clearView()
+      this.router.navigate(['/'])
+      return
+    }
+    this.loadProtocolDetails(this.revision).catch(() => undefined)
+  }
+
+  public ionViewDidLeave(): void { this.clearView() }
+  public ngOnDestroy(): void { this.clearView(); this.unregisterCleanup() }
+
+  private assertCurrent(revision = this.revision): number {
+    if (!this.active || revision !== this.revision || !this.wallet) throw new Error('This account view is closed.')
+    this.access.assertContext(this.contextId)
+    this.access.assertWallet(this.wallet, this.secret)
+    return this.contextId
+  }
+
+  private clearView(): void {
+    this.active = false
+    this.revision++
+    this.wallet = undefined
+    this.secret = undefined
+    this.protocolName = undefined
+    this.protocolIdentifier = undefined
+    this.protocolSymbol = undefined
+    this.syncOptions = []
+    this.showMetaMaskMigrationOnboarding = false
+    this.shareObject = undefined
+    this.shareObjectPromise = undefined
+    this.walletShareUrl = undefined
+    const popover = this.editPopover
+    this.editPopover = undefined
+    popover?.dismiss().catch(() => undefined)
+    this.modal?.dismiss().catch(() => undefined)
+  }
+
+  private async loadProtocolDetails(revision: number): Promise<void> {
     if (this.wallet) {
       const [protocolSymbol, protocolIdentifier, protocolName] = await Promise.all([
         this.wallet.protocol.getSymbol(),
@@ -140,6 +194,7 @@ export class AccountAddressPage {
         this.wallet.protocol.getName()
       ])
 
+      this.assertCurrent(revision)
       this.protocolSymbol = protocolSymbol
       this.protocolIdentifier = protocolIdentifier
       this.protocolName = protocolName
@@ -174,84 +229,98 @@ export class AccountAddressPage {
   }
 
   public done(): void {
-    this.navigationService.routeWithState('/accounts-list', { secret: this.secret }).catch(handleErrorLocal(ErrorCategory.IONIC_NAVIGATION))
+    const contextId = this.assertCurrent()
+    this.navigationService.routeWithState('/accounts-list', { secret: this.secret, contextId }).catch(handleErrorLocal(ErrorCategory.IONIC_NAVIGATION))
   }
 
   public async share(companionApp: CompanionApp = airgapwallet): Promise<void> {
+    const revision = this.revision
+    const contextId = this.assertCurrent(revision)
     await this.waitWalletShareUrl()
-
-    this.interactionService.startInteraction({
-      operationType: InteractionOperationType.WALLET_SYNC,
-      iacMessage: this.shareObject,
-      companionApp: companionApp
+    this.assertCurrent(revision)
+    await this.interactionService.startInteraction({
+      contextId, operationType: InteractionOperationType.WALLET_SYNC, iacMessage: this.shareObject, companionApp
     })
   }
 
   public async presentEditPopover(event: Event): Promise<void> {
-    const popover: HTMLIonPopoverElement = await this.popoverCtrl.create({
+    const revision = this.revision
+    const contextId = this.assertCurrent(revision)
+    const popover = await this.popoverCtrl.create({
       component: AccountEditPopoverComponent,
       componentProps: {
         wallet: this.wallet,
-        openAddressQR: () => {
-          this.modal.present().catch(handleErrorLocal(ErrorCategory.IONIC_MODAL))
+        contextId,
+        openAddressQR: async () => {
+          this.assertCurrent(revision)
+          await this.modal.present()
+          try { this.assertCurrent(revision) } catch (error) { this.modal?.dismiss().catch(() => undefined); throw error }
         },
         getWalletShareUrl: async () => {
+          this.assertCurrent(revision)
           await this.waitWalletShareUrl()
+          this.assertCurrent(revision)
           return this.walletShareUrl
         },
         onDelete: (): void => {
-          this.navigationService.back()
+          this.access.assertContext(contextId)
+          if (this.active && this.revision === revision) this.navigationService.back()
         }
       },
       event,
       translucent: true
     })
-    return popover.present().catch(handleErrorLocal(ErrorCategory.IONIC_ALERT))
+    try { this.assertCurrent(revision) } catch (error) { popover.dismiss().catch(() => undefined); throw error }
+    this.editPopover = popover
+    await popover.present()
+    try { this.assertCurrent(revision) } catch (error) { popover.dismiss().catch(() => undefined); throw error }
   }
 
   public async copyAddressToClipboard(): Promise<void> {
+    this.assertCurrent()
     await this.clipboardService.copyAndShowToast(this.wallet.receivingPublicAddress)
   }
 
-  private async waitWalletShareUrl() {
+  private async waitWalletShareUrl(): Promise<void> {
+    const revision = this.revision
+    this.assertCurrent(revision)
     await this.prepareSyncObject()
-    this.walletShareUrl = await this.deepLinkService.generateDeepLinkUrl(this.shareObject)
+    this.assertCurrent(revision)
+    const walletShareUrl = await this.deepLinkService.generateDeepLinkUrl(this.shareObject)
+    this.assertCurrent(revision)
+    this.walletShareUrl = walletShareUrl
   }
 
   private async prepareSyncObject(): Promise<void> {
-    if (this.shareObject !== undefined) {
-      return
+    const revision = this.revision
+    this.assertCurrent(revision)
+    if (this.shareObject !== undefined) return
+    if (this.shareObjectPromise !== undefined) return this.shareObjectPromise
+    const wallet = this.wallet
+    const pending = (async () => {
+      await this.migrationService.runWalletsMigration([wallet])
+      this.assertCurrent(revision)
+      if (!isWalletMigrated(wallet)) {
+        await this.showWalletNotMigratedAlert()
+        this.assertCurrent(revision)
+        throw new Error('Cannot create share URL, wallet data is incomplete')
+      }
+      const shareObject = await this.shareUrlService.generateShareWalletURL(wallet)
+      this.assertCurrent(revision)
+      this.shareObject = shareObject
+    })()
+    this.shareObjectPromise = pending
+    try { await pending } finally {
+      if (this.shareObjectPromise === pending) this.shareObjectPromise = undefined
     }
-
-    await this.migrationService.runWalletsMigration([this.wallet])
-    if (!isWalletMigrated(this.wallet)) {
-      await this.showWalletNotMigratedAlert()
-
-      return Promise.reject('Cannot create share URL, wallet data is incomplete')
-    }
-
-    if (this.shareObjectPromise === undefined) {
-      this.shareObjectPromise = new Promise<IACMessageDefinitionObjectV3[]>(async (resolve) => {
-        const shareObject: IACMessageDefinitionObjectV3[] = await this.shareUrlService.generateShareWalletURL(this.wallet)
-        resolve(shareObject)
-      }).then((shareObject: IACMessageDefinitionObjectV3[]) => {
-        this.shareObject = shareObject
-        this.shareObjectPromise = undefined
-      })
-    }
-
-    return this.shareObjectPromise
   }
 
   private async showWalletNotMigratedAlert(): Promise<void> {
+    this.assertCurrent()
     return this.uiEventService.showTranslatedAlert({
       header: 'wallet-address.alert.wallet-not-migrated.header',
       message: 'wallet-address.alert.wallet-not-migrated.message',
-      buttons: [
-        {
-          text: 'wallet-address.alert.wallet-not-migrated.button_label'
-        }
-      ]
+      buttons: [{ text: 'wallet-address.alert.wallet-not-migrated.button_label' }]
     })
   }
 }
