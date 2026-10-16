@@ -25,6 +25,9 @@ AirGap Vault is a hybrid application (using the same codebase for Android and iO
 
 ## Features
 
+- Bitcoin PSBT multisig signing with Sparrow over animated QR codes (P2SH, P2SH-P2WSH and P2WSH).
+  Open a Secret, then choose **Bitcoin multisig** in the account list. See [workflow and supported scope](docs/PSBT_MULTISIG.zh-CN.txt).
+
 - Secure secret generation with added entropy from audio, video, touch and device accelerometer
 - Secure storage using the secure enclave of the device, accessible only by biometric authenticaiton
 - Secure, one-way communication with AirGap Wallet over QR codes or URL-Schemes (app switching)

@@ -1012,5 +1012,43 @@
         "step2": "Copy the downloaded file from your online computer to the offline device via SD Card or USB Stick and replace the old installation."
       }
     }
+  },
+  "bitcoin-multisig": {
+    "title": "Bitcoin multisig",
+    "intro": "Use this open wallet as a Bitcoin multisig signer. Sparrow creates the wallet, collects signatures and broadcasts the transaction.",
+    "network": "Network",
+    "sign-heading": "Sign a PSBT",
+    "scan-help": "In Sparrow, choose Show QR and use UR encoding. Scan the complete animated QR sequence.",
+    "scan": "Scan Sparrow PSBT",
+    "review": "Review transaction",
+    "export-heading": "Export cosigner public key",
+    "script-type": "Multisig script type",
+    "account": "Account index",
+    "legacy-account-help": "Legacy uses m/45' and has no account index.",
+    "export": "Show public key QR",
+    "export-help": "In the matching Sparrow multisig keystore, scan this public key QR. Match the network and script type. This exports one cosigner, not a complete wallet.",
+    "transaction": "Unsigned transaction ID",
+    "inputs": "Inputs",
+    "outputs": "All outputs",
+    "outputs-help": "Check every destination and amount, including your expected change. This signer does not identify change outputs.",
+    "fee": "Transaction fee",
+    "fee-unverified": "Some input amounts come only from the PSBT. The fee shown is calculated from those supplied amounts; full previous transactions were not supplied for every input.",
+    "confirm-help": "Confirm these outputs before adding this wallet’s signature. Only SIGHASH_ALL is supported.",
+    "sign": "Confirm and sign",
+    "cancel": "Cancel",
+    "result": "PSBT ready for Sparrow",
+    "return-help": "In Sparrow, choose Scan QR. Sparrow merges this PSBT with the transaction and collects any remaining signatures.",
+    "added": "New signatures",
+    "already-signed": "Inputs already signed by this wallet",
+    "fragments": "QR fragments",
+    "fingerprint": "Master fingerprint",
+    "path": "Derivation path",
+    "another": "Start another operation",
+    "done": "Back to accounts",
+    "export-error": "Public key export failed. Check the account index and complete system authentication, then retry.",
+    "scan-error": "The PSBT QR could not be read. Use UR encoding and scan only one transaction. Start a new scan to retry.",
+    "review-error": "Unsupported or invalid PSBT. Use PSBT v0 with P2SH, P2SH-P2WSH or P2WSH multisig inputs and SIGHASH_ALL. Taproot signing is not supported here.",
+    "sign-error": "Signing failed. Check that the open wallet and selected network match every input, then retry system authentication.",
+    "single-request": "Scan one multisig transaction at a time."
   }
 }

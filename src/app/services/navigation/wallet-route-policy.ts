@@ -7,7 +7,7 @@ export function navigationPath(url: string): string {
 const walletRoutes = new Set([
   '/tabs/tab-scan', '/accounts-list', '/account-add', '/account-address', '/address-explorer',
   '/account-share', '/account-share-select', '/select-account', '/deserialized-detail',
-  '/transaction-signed', '/interaction-selection', '/migration'
+  '/transaction-signed', '/interaction-selection', '/migration', '/bitcoin-multisig'
 ])
 const defaultRoutes = new Set([
   '/secret-edit', '/bip85-generate', '/bip85-show', '/social-recovery-setup',

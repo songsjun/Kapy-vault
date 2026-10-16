@@ -20,6 +20,7 @@ import { InteractionOperationType, InteractionService } from '../interaction/int
 import { NavigationService } from '../navigation/navigation.service'
 import { SecretsService } from '../secrets/secrets.service'
 import { WalletAccessService } from '../wallet-access/wallet-access.service'
+import { isMultisigPsbt } from '../bitcoin-multisig/bitcoin-multisig.service'
 import * as bitcoinJS from '@airgap/coinlib-core/dependencies/src/bitcoinjs-lib-6.1.7/src/index'
 import { ModalController, Platform } from '@ionic/angular'
 import { SelectAccountPage } from 'src/app/pages/select-account/select-account.page'
@@ -68,6 +69,25 @@ export class IACService extends BaseIACService {
     const contextId = await this.requireOpenWallet()
     if (contextId === undefined) return false
     const signTransactionRequests: IACMessageDefinitionObjectV3[] = messageWrapper.result
+
+    const multisigRequests = signTransactionRequests.filter((request) =>
+      [MainProtocolSymbols.BTC, MainProtocolSymbols.BTC_SEGWIT].includes(request.protocol as MainProtocolSymbols) &&
+      isMultisigPsbt((request.payload as UnsignedTransaction)?.transaction?.psbt)
+    )
+    if (multisigRequests.length > 0) {
+      this.access.assertContext(contextId)
+      if (signTransactionRequests.length !== 1) {
+        await this.uiEventService.showTranslatedAlert({
+          header: 'bitcoin-multisig.title', message: 'bitcoin-multisig.single-request', buttons: [{ text: 'OK' }]
+        })
+        return false
+      }
+      await this.navigationService.routeWithState('/bitcoin-multisig', {
+        contextId,
+        psbtHex: (multisigRequests[0].payload as UnsignedTransaction).transaction.psbt
+      })
+      return true
+    }
 
     const transactionInfos: SignTransactionInfo[] = (
       await Promise.all(

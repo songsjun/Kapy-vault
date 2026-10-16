@@ -1,6 +1,6 @@
 import { AirGapWallet, AirGapWalletStatus } from '@airgap/coinlib-core'
 import { Injectable } from '@angular/core'
-import { BIP32Factory, BIP32Interface } from '@airgap/coinlib-core/dependencies/src/bip32-5.0.1/src/index'
+import { BIP32Factory } from '@airgap/coinlib-core/dependencies/src/bip32-5.0.1/src/index'
 import * as ecc from '@airgap/coinlib-core/dependencies/src/@bitcoinerlab/secp256k1-1.2.0/src/index'
 import { entropyToMnemonic, mnemonicToSeed } from 'bip39'
 
@@ -9,46 +9,47 @@ import { isSecretMigrated, isWalletMigrated } from '../../utils/migration'
 import { ErrorCategory, handleErrorLocal } from '../error-handler/error-handler.service'
 import { NavigationService } from '../navigation/navigation.service'
 import { SecretsService } from '../secrets/secrets.service'
+import { WalletAccessService } from '../wallet-access/wallet-access.service'
 
 @Injectable({
   providedIn: 'root'
 })
 export class MigrationService {
   private readonly bip32 = BIP32Factory(ecc)
-  constructor(private readonly secretsService: SecretsService, private readonly navigationService: NavigationService) {}
+  constructor(private readonly secretsService: SecretsService, private readonly navigationService: NavigationService,
+      private readonly access: WalletAccessService) {}
 
   public async runSecretsMigration(secrets: MnemonicSecret[]): Promise<void> {
-    return new Promise((resolve, reject) => {
-      if (secrets.every(isSecretMigrated)) {
-        resolve()
-      } else {
-        this.navigateToMigrationPage({ secrets }).then(resolve).catch(reject)
-      }
-    })
+    const contextId = this.access.getContextId()
+    for (const secret of secrets) this.access.requireDefault(secret)
+    if (!secrets.every(isSecretMigrated)) {
+      await this.navigateToMigrationPage({ secrets, contextId }, contextId)
+      this.access.assertContext(contextId)
+    }
   }
 
   public async runWalletsMigration(wallets: AirGapWallet[]): Promise<void> {
-    return new Promise((resolve, reject) => {
-      if (wallets.every(isWalletMigrated)) {
-        resolve()
-      } else {
-        this.navigateToMigrationPage({ wallets }).then(resolve).catch(reject)
-      }
-    })
+    const contextId = this.access.getContextId()
+    for (const wallet of wallets) this.access.assertWallet(wallet)
+    if (!wallets.every(isWalletMigrated)) {
+      await this.navigateToMigrationPage({ wallets, contextId }, contextId)
+      this.access.assertContext(contextId)
+    }
   }
 
-  private async navigateToMigrationPage(navigationData: any): Promise<void> {
+  private async navigateToMigrationPage(navigationData: any, contextId: number): Promise<void> {
+    this.access.assertContext(contextId)
     return new Promise((resolve, reject) => {
-      this.navigationService
-        .routeWithState('/migration', {
-          ...navigationData,
-          onSuccess: resolve,
-          onError: reject
-        })
-        .catch((error) => {
-          handleErrorLocal(ErrorCategory.IONIC_NAVIGATION)(error)
-          reject(error)
-        })
+      this.navigationService.routeWithState('/migration', {
+        ...navigationData,
+        onSuccess: () => {
+          try { this.access.assertContext(contextId); resolve() } catch (error) { reject(error) }
+        },
+        onError: reject
+      }).catch((error) => {
+        handleErrorLocal(ErrorCategory.IONIC_NAVIGATION)(error)
+        reject(error)
+      })
     })
   }
 
@@ -98,85 +99,56 @@ export class MigrationService {
     return [migratedSecrets.filter((secret: MnemonicSecret | undefined) => secret !== undefined), false]
   }
 
-  public async migrateSecret(secret: MnemonicSecret, options: { mnemonic?: string; persist?: boolean } = {}): Promise<void> {
-    const defaultOptions = {
-      persist: false
+  public async migrateSecret(secret: MnemonicSecret, options: { persist?: boolean } = {}): Promise<void> {
+    const contextId = this.access.getContextId()
+    this.access.requireDefault(secret)
+    if (!this.access.isConfigured(secret)) throw new Error('Re-import this legacy Secret with a default wallet password first.')
+    if (!secret.fingerprint) {
+      const entropy = await this.secretsService.retrieveEntropyForSecret(secret)
+      this.access.assertContext(contextId)
+      this.access.requireDefault(secret)
+      const seed = await mnemonicToSeed(entropyToMnemonic(entropy))
+      try {
+        this.access.assertContext(contextId)
+        this.access.requireDefault(secret)
+        secret.fingerprint = Buffer.from(this.bip32.fromSeed(new Uint8Array(seed)).fingerprint).toString('hex')
+      } finally { seed.fill(0) }
     }
-
-    const resolvedOptions = {
-      ...defaultOptions,
-      ...options
-    }
-
-    if (secret.fingerprint === undefined) {
-      let mnemonic: string | undefined = resolvedOptions.mnemonic
-      if (mnemonic === undefined) {
-        const entropy: string = await this.secretsService.retrieveEntropyForSecret(secret)
-        mnemonic = entropyToMnemonic(entropy)
-      }
-
-      const seed: Buffer = await mnemonicToSeed(mnemonic)
-      const bip32Node: BIP32Interface = this.bip32.fromSeed(new Uint8Array(seed))
-      const fingerprint: string = Buffer.from(bip32Node.fingerprint).toString('hex')
-
-      secret.fingerprint = fingerprint
-    }
-
-    if (resolvedOptions.persist) {
+    if (options.persist) {
       await this.secretsService.addOrUpdateSecret(secret, { setActive: false })
+      this.access.assertContext(contextId)
     }
   }
 
-  public async migrateWallet(
-    wallet: AirGapWallet,
-    options: { mnemonic?: string; bip39Passphrase?: string; persist?: boolean }
-  ): Promise<void> {
-    const defaultOptions = {
-      bip39Passphrase: '',
-      persist: false
-    }
+  public async migrateWallet(wallet: AirGapWallet, options: { persist?: boolean } = {}): Promise<void> {
+    const contextId = this.access.getContextId()
+    this.access.assertWallet(wallet)
+    const secret = this.access.getCurrentSecret()
+    if (!this.access.isConfigured(secret)) throw new Error('Re-import this legacy Secret with a default wallet password first.')
+    if (wallet.masterFingerprint && !options.persist) return
 
-    const resolvedOptions = {
-      ...defaultOptions,
-      ...options
-    }
+    const passphrase = this.access.getPassphrase(secret)
+    const entropy = await this.secretsService.retrieveEntropyForSecret(secret)
+    this.access.assertContext(contextId)
+    this.access.assertWallet(wallet, secret)
+    const mnemonic = entropyToMnemonic(entropy)
+    const publicKey = wallet.isExtendedPublicKey
+      ? await wallet.protocol.getExtendedPublicKeyFromMnemonic(mnemonic, wallet.derivationPath, passphrase)
+      : await wallet.protocol.getPublicKeyFromMnemonic(mnemonic, wallet.derivationPath, passphrase)
+    this.access.assertContext(contextId)
+    this.access.assertWallet(wallet, secret)
+    if (publicKey !== wallet.publicKey) throw new Error('This account does not belong to the currently opened wallet.')
 
-    if (wallet.masterFingerprint && !resolvedOptions.persist) {
-      return
-    }
-
-    let mnemonic: string | undefined = resolvedOptions.mnemonic
-    let secret: MnemonicSecret | undefined
-    if (mnemonic === undefined || resolvedOptions.persist) {
-      secret = this.secretsService.findByPublicKey(wallet.publicKey)
-    }
-
-    if (mnemonic === undefined && secret !== undefined) {
-      const entropy: string = await this.secretsService.retrieveEntropyForSecret(secret)
-      mnemonic = entropyToMnemonic(entropy)
-    } else if (mnemonic === undefined) {
-      return
-    }
-
-    const publicKey: string = await wallet.protocol.getPublicKeyFromMnemonic(
-      mnemonic,
-      wallet.derivationPath,
-      resolvedOptions.bip39Passphrase
-    )
-
-    if (publicKey !== wallet.publicKey) {
-      throw new Error('Invalid BIP-39 Passphrase')
-    }
-
-    const seed: Buffer = await mnemonicToSeed(mnemonic, resolvedOptions.bip39Passphrase)
-    const bip32Node: BIP32Interface = this.bip32.fromSeed(new Uint8Array(seed))
-    const fingerprint: string = Buffer.from(bip32Node.fingerprint).toString('hex')
-
-    wallet.masterFingerprint = fingerprint
-    wallet.status = AirGapWalletStatus.ACTIVE
-
-    if (resolvedOptions.persist && secret !== undefined) {
-      await this.migrateSecret(secret, { mnemonic: resolvedOptions.mnemonic, persist: resolvedOptions.persist })
+    const seed = await mnemonicToSeed(mnemonic, passphrase)
+    try {
+      this.access.assertContext(contextId)
+      this.access.assertWallet(wallet, secret)
+      wallet.masterFingerprint = Buffer.from(this.bip32.fromSeed(new Uint8Array(seed)).fingerprint).toString('hex')
+      wallet.status = AirGapWalletStatus.ACTIVE
+    } finally { seed.fill(0) }
+    if (options.persist) {
+      await this.access.updateAccount(wallet)
+      this.access.assertContext(contextId)
     }
   }
 }

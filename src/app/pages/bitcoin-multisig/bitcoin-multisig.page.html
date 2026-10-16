@@ -1,0 +1,114 @@
+<ion-header class="ion-no-border">
+  <ion-toolbar>
+    <ion-buttons slot="start"><ion-back-button defaultHref="/tabs/tab-secrets"></ion-back-button></ion-buttons>
+    <ion-title>{{ 'bitcoin-multisig.title' | translate }}</ion-title>
+  </ion-toolbar>
+</ion-header>
+
+<ion-content class="ion-padding" [class.scanning]="stage === 'scan'">
+  <ion-text color="danger" *ngIf="errorKey"><p role="alert">{{ errorKey | translate }}</p></ion-text>
+  <ion-progress-bar *ngIf="busy" type="indeterminate"></ion-progress-bar>
+
+  <ng-container *ngIf="stage === 'setup'">
+    <p>{{ 'bitcoin-multisig.intro' | translate }}</p>
+    <ion-list>
+      <ion-item>
+        <ion-label>{{ 'bitcoin-multisig.network' | translate }}</ion-label>
+        <ion-select [(ngModel)]="network" (ionChange)="configurationChanged()" [disabled]="busy">
+          <ion-select-option value="mainnet">Mainnet</ion-select-option>
+          <ion-select-option value="testnet">Testnet</ion-select-option>
+          <ion-select-option value="signet">Signet</ion-select-option>
+          <ion-select-option value="regtest">Regtest</ion-select-option>
+        </ion-select>
+      </ion-item>
+    </ion-list>
+    <h2>{{ 'bitcoin-multisig.sign-heading' | translate }}</h2>
+    <p>{{ 'bitcoin-multisig.scan-help' | translate }}</p>
+    <ion-button expand="block" (click)="startPsbtScan()" [disabled]="busy">{{ 'bitcoin-multisig.scan' | translate }}</ion-button>
+    <ion-button expand="block" *ngIf="hasScannedRequest" (click)="reviewRequest()" [disabled]="busy">
+      {{ 'bitcoin-multisig.review' | translate }}
+    </ion-button>
+    <h2>{{ 'bitcoin-multisig.export-heading' | translate }}</h2>
+    <ion-list>
+      <ion-item>
+        <ion-label position="stacked">{{ 'bitcoin-multisig.script-type' | translate }}</ion-label>
+        <ion-select [(ngModel)]="scriptType" (ionChange)="configurationChanged()" [disabled]="busy">
+          <ion-select-option value="p2wsh">Native SegWit (P2WSH)</ion-select-option>
+          <ion-select-option value="p2sh-p2wsh">Nested SegWit (P2SH-P2WSH)</ion-select-option>
+          <ion-select-option value="p2sh">Legacy (P2SH)</ion-select-option>
+        </ion-select>
+      </ion-item>
+      <ion-item>
+        <ion-input [label]="'bitcoin-multisig.account' | translate" labelPlacement="stacked"
+          type="number" min="0" max="2147483647" [(ngModel)]="account" (ionChange)="configurationChanged()"
+          [disabled]="busy || scriptType === 'p2sh'"></ion-input>
+      </ion-item>
+    </ion-list>
+    <p *ngIf="scriptType === 'p2sh'">{{ 'bitcoin-multisig.legacy-account-help' | translate }}</p>
+    <ion-button expand="block" fill="outline" (click)="exportCosigner()" [disabled]="busy">
+      {{ 'bitcoin-multisig.export' | translate }}
+    </ion-button>
+  </ng-container>
+
+  <ng-container *ngIf="stage === 'scan'">
+    <p>{{ 'bitcoin-multisig.scan-help' | translate }}</p>
+    <ion-progress-bar [value]="progress"></ion-progress-bar>
+    <p>{{ progress | percent }}</p>
+    <zxing-scanner #scanner *ngIf="isBrowser || isElectron" [formats]="['QR_CODE']" [timeBetweenScans]="0"
+      [delayBetweenScanSuccess]="0" (scanSuccess)="checkScan($event)"></zxing-scanner>
+    <div class="camera-window" *ngIf="isMobile && (hasCameraPermission | async)">
+      <img src="./assets/img/qr_code_guides.svg" alt="" />
+    </div>
+    <ion-button *ngIf="(hasCameraPermission | async) === false" (click)="requestPermission()">
+      {{ 'tab-scan.grant-permission_label' | translate }}
+    </ion-button>
+    <ion-button expand="block" fill="outline" (click)="reset()">{{ 'bitcoin-multisig.cancel' | translate }}</ion-button>
+  </ng-container>
+
+  <ng-container *ngIf="stage === 'review' && review">
+    <h2>{{ 'bitcoin-multisig.review' | translate }}</h2>
+    <p>{{ 'bitcoin-multisig.network' | translate }}: {{ network }}</p>
+    <p class="break">{{ 'bitcoin-multisig.transaction' | translate }}: {{ review.transactionId }}</p>
+    <h3>{{ 'bitcoin-multisig.inputs' | translate }}</h3>
+    <ion-list>
+      <ion-item *ngFor="let input of review.inputs">
+        <ion-label class="ion-text-wrap">#{{ input.index }} · {{ input.scriptType }} · {{ input.threshold }}/{{ input.keyCount }}
+          <p>{{ input.amount }} sat</p>
+        </ion-label>
+      </ion-item>
+    </ion-list>
+    <h3>{{ 'bitcoin-multisig.outputs' | translate }}</h3>
+    <p>{{ 'bitcoin-multisig.outputs-help' | translate }}</p>
+    <ion-list>
+      <ion-item *ngFor="let output of review.outputs">
+        <ion-label class="ion-text-wrap break">#{{ output.index }} · {{ output.amount }} sat
+          <p>{{ output.address || output.scriptHex }}</p>
+        </ion-label>
+      </ion-item>
+    </ion-list>
+    <p><strong>{{ 'bitcoin-multisig.fee' | translate }}: {{ review.fee }} sat</strong></p>
+    <p *ngIf="!review.feeVerified">{{ 'bitcoin-multisig.fee-unverified' | translate }}</p>
+    <p>{{ 'bitcoin-multisig.confirm-help' | translate }}</p>
+    <ion-button expand="block" (click)="sign()" [disabled]="busy">{{ 'bitcoin-multisig.sign' | translate }}</ion-button>
+    <ion-button expand="block" fill="outline" (click)="reset()" [disabled]="busy">{{ 'bitcoin-multisig.cancel' | translate }}</ion-button>
+  </ng-container>
+
+  <ng-container *ngIf="stage === 'export' || stage === 'signed'">
+    <h2>{{ (stage === 'export' ? 'bitcoin-multisig.export-heading' : 'bitcoin-multisig.result') | translate }}</h2>
+    <p>{{ (stage === 'export' ? 'bitcoin-multisig.export-help' : 'bitcoin-multisig.return-help') | translate }}</p>
+    <ng-container *ngIf="stage === 'signed'">
+      <p>{{ 'bitcoin-multisig.added' | translate }}: {{ addedSignatures }}</p>
+      <p *ngIf="alreadySignedInputs">{{ 'bitcoin-multisig.already-signed' | translate }}: {{ alreadySignedInputs }}</p>
+    </ng-container>
+    <div class="qr" *ngIf="qrData"><airgap-qr [qrdata]="qrData" [size]="280" [level]="'L'" [disableClipboard]="true"></airgap-qr></div>
+    <p>{{ 'bitcoin-multisig.fragments' | translate }}: {{ qrParts }}</p>
+    <ng-container *ngIf="cosigner">
+      <p>{{ 'bitcoin-multisig.network' | translate }}: {{ cosigner.network }}</p>
+      <p>{{ 'bitcoin-multisig.fingerprint' | translate }}: {{ cosigner.masterFingerprint }}</p>
+      <p>{{ 'bitcoin-multisig.path' | translate }}: {{ cosigner.derivationPath }}</p>
+      <p class="break">xpub: {{ cosigner.xpub }}</p>
+    </ng-container>
+    <ion-button expand="block" (click)="reset()">{{ 'bitcoin-multisig.another' | translate }}</ion-button>
+    <ion-button expand="block" fill="outline" (click)="done()">{{ 'bitcoin-multisig.done' | translate }}</ion-button>
+  </ng-container>
+</ion-content>

@@ -11,7 +11,6 @@ import { ErrorCategory, handleErrorLocal } from '../../services/error-handler/er
 import * as actions from './migration.actions'
 import * as fromMigration from './migration.reducers'
 import { Alert, MigrationWalletGroup } from './migration.types'
-import { shortenAddress } from './migration.utils'
 
 @Component({
   selector: 'airgap-migration',
@@ -90,7 +89,7 @@ export class MigrationPage implements OnDestroy {
       case 'paranoiaInfo':
         return this.paranoiaInfoAlert(alert.label)
       case 'bip39Passphrase':
-        return this.bip39PassphraseAlert(alert.address, alert.protocolName)
+        return this.unknownErrorAlert('Re-import this legacy Secret with a default wallet password first.')
       case 'unknownError':
         return this.unknownErrorAlert(alert.message)
       default:
@@ -116,39 +115,6 @@ export class MigrationPage implements OnDestroy {
           text: 'migration.alert.paranoia-info.button-ok_label',
           handler: (): void => {
             this.store.dispatch(actions.paranoiaAccepted())
-          }
-        }
-      ]
-    }
-  }
-
-  private bip39PassphraseAlert(address: string, protocol: string): AlertOptions {
-    return {
-      header: 'migration.alert.bip39-passphrase.header',
-      message: this.translateService.instant('migration.alert.bip39-passphrase.message', {
-        address: shortenAddress(address),
-        protocol
-      }),
-      backdropDismiss: false,
-      inputs: [
-        {
-          name: 'bip39Passphrase',
-          type: 'password',
-          placeholder: 'migration.alert.bip39-passphrase.input-placeholder_label'
-        }
-      ],
-      buttons: [
-        {
-          text: 'migration.alert.bip39-passphrase.button-skip_label',
-          handler: (): void => {
-            this.store.dispatch(actions.bip39PassphraseRejected())
-          }
-        },
-        {
-          text: 'migration.alert.bip39-passphrase.button-ok_label',
-          handler: (result: { bip39Passphrase: string }): void => {
-            const passphrase: string = result.bip39Passphrase ?? ''
-            this.store.dispatch(actions.bip39PassphraseProvided({ passphrase }))
           }
         }
       ]

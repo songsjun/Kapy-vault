@@ -464,7 +464,7 @@ test('entropy reads preserve native authentication while account commits use the
   assert.equal(f.calls.envelopeReads, reads + 2)
   const wallet = await add(f, secret)
   assert.equal(f.calls.envelopeReads, reads + 3, 'adding an account must also authorize the entropy read')
-  wallet.addressIndex = 1
+  wallet.status = AirGapWalletStatus.HIDDEN
   await f.access.updateAccount(wallet)
   assert.equal(f.calls.envelopeReads, reads + 3, 'account-only commit must not reread native entropy')
   assertCiphertext(envelope(f, secret))
@@ -702,7 +702,7 @@ test('account updates use fresh payload nonces and preserve existing password sl
   assert.notEqual(after.payload.iv, before.payload.iv)
   assert.notEqual(after.payload.data, before.payload.data)
   assert.deepEqual(after.slots, before.slots)
-  wallet.addressIndex = 1
+  wallet.status = AirGapWalletStatus.HIDDEN
   await f.access.updateAccount(wallet)
   const updated = envelope(f, secret)
   assert.notEqual(updated.payload.iv, after.payload.iv)
@@ -838,5 +838,81 @@ test('recovery snapshot creation finishes before queued registration marks that 
     if (registration) await registration
     crypto.addKeySlot = original
     f.storage.set = save
+  }
+})
+
+
+test('closing a wallet during Secret creation cannot restore entropy to a cleaned draft', async () => {
+  const f = fixture()
+  await f.service.isReady()
+  let release, entered
+  const barrier = new Promise((resolve) => { release = resolve })
+  const reached = new Promise((resolve) => { entered = resolve })
+  const original = f.access.setup.bind(f.access)
+  f.access.setup = async (...args) => { await original(...args); entered(); await barrier }
+  const draft = new MnemonicSecret(ENTROPY, 'Public cancelled draft')
+  const creating = f.service.createSecret(draft, DEFAULT)
+  await reached
+  f.access.lock()
+  draft.flushSecret()
+  const rejection = assert.rejects(creating)
+  release()
+  await rejection
+  assert.equal(draft.secretHex, undefined)
+  assert.equal(f.access.isUnlocked(), false)
+})
+
+// A Bitcoin HD wallet flattens all external addresses, then all internal addresses.
+// Preserve the full list length so an internal selected index keeps its exact meaning.
+test('reopening a Bitcoin account preserves its complete address batch and selected internal address', async () => {
+  const f = fixture(), secret = await create(f), wallet = await add(f, secret, 'btc')
+  wallet.addresses = await wallet.deriveAddresses(4)
+  wallet.addressIndex = 4
+  const addresses = [...wallet.addresses], selected = wallet.receivingPublicAddress
+  await f.access.updateAccount(wallet)
+  f.access.lock()
+  await f.access.unlock(secret, DEFAULT)
+  const restored = f.access.getWallets()[0]
+  assert.deepEqual(restored.addresses, addresses)
+  assert.equal(restored.addressIndex, 4)
+  assert.equal(restored.receivingPublicAddress, selected)
+})
+
+async function rewriteAddressConfig(f, secret, update) {
+  const opened = await crypto.openEnvelope(envelope(f, secret), DEFAULT)
+  try {
+    const stored = JSON.parse(opened.plaintext)
+    update(stored.registry.entries[0].accounts[0])
+    const sealed = await crypto.encryptPayload(envelope(f, secret), opened.key, JSON.stringify(stored))
+    f.native.set(nativeKey(secret), JSON.stringify(sealed))
+  } finally { opened.key.fill(0) }
+  f.access.lock()
+}
+
+for (const index of [0, 1]) {
+  test(`old Bitcoin configs without an address count retain the original one-per-chain index ${index}`, async () => {
+    const f = fixture(), secret = await create(f), wallet = await add(f, secret, 'btc')
+    const selected = wallet.addresses[index]
+    await rewriteAddressConfig(f, secret, config => { delete config.addressCount; config.addressIndex = index })
+    await f.access.unlock(secret, DEFAULT)
+    assert.equal(f.access.getWallets()[0].receivingPublicAddress, selected)
+  })
+}
+
+test('an old selected index that needs an unknown address batch is refused instead of selecting a different address', async () => {
+  const f = fixture(), secret = await create(f); await add(f, secret, 'btc')
+  await rewriteAddressConfig(f, secret, config => { delete config.addressCount; config.addressIndex = 4 })
+  await assert.rejects(f.access.unlock(secret, DEFAULT), /original address count/)
+  assert.equal(f.access.isUnlocked(), false)
+})
+
+test('stored address counts are bounded integers and the selected index must be inside the exact derived list', async () => {
+  const f = fixture(), secret = await create(f); await add(f, secret, 'btc')
+  const original = f.native.get(nativeKey(secret))
+  for (const [count, index] of [[0, 0], [-1, 0], [1.5, 0], [10001, 0], [3, 0], [2, 2]]) {
+    f.native.set(nativeKey(secret), original)
+    await rewriteAddressConfig(f, secret, config => { config.addressCount = count; config.addressIndex = index })
+    await assert.rejects(f.access.unlock(secret, DEFAULT), /Invalid account configuration|Invalid stored Bitcoin address count/)
+    assert.equal(f.access.isUnlocked(), false)
   }
 })

@@ -1,4 +1,7 @@
 /.angular/cache
+# Local builds, device installation records and browser test artifacts.
+/output/
+/.playwright-cli/
 # Specifies intentionally untracked files to ignore when using Git
 # http://git-scm.com/docs/gitignore
 

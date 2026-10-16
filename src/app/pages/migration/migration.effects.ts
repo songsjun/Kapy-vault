@@ -3,7 +3,6 @@ import { AirGapWallet, AirGapWalletStatus, ProtocolSymbols } from '@airgap/coinl
 import { Injectable } from '@angular/core'
 import { Actions, createEffect, ofType } from '@ngrx/effects'
 import { Action, Store } from '@ngrx/store'
-import { entropyToMnemonic } from 'bip39'
 import { concat, from, Observable, of, Subscriber } from 'rxjs'
 import { first, switchMap, tap, withLatestFrom } from 'rxjs/operators'
 
@@ -12,7 +11,6 @@ import { MigrationService } from '../../services/migration/migration.service'
 import { NavigationService } from '../../services/navigation/navigation.service'
 import { SecretsService } from '../../services/secrets/secrets.service'
 import { isSecretMigrated, isWalletMigrated } from '../../utils/migration'
-import { retry } from '../../utils/retry'
 
 import * as actions from './migration.actions'
 import * as fromMigration from './migration.reducers'
@@ -226,13 +224,10 @@ export class MigrationEffects {
       }
     }
 
-    const entropy: string = await this.secretsService.retrieveEntropyForSecret(secret)
-    const mnemonic: string = entropyToMnemonic(entropy)
-
-    await this.migrationService.migrateSecret(secret, { mnemonic, persist: false })
+    await this.migrationService.migrateSecret(secret, { persist: false })
 
     for (const wallet of secret.wallets.filter((wallet: AirGapWallet) => targetWalletKeys.has(wallet.publicKey))) {
-      await this.migrateWallet(subscriber, wallet, mnemonic)
+      await this.migrateWallet(subscriber, wallet)
     }
 
     subscriber.next(actions.allWalletsHandled())
@@ -245,36 +240,9 @@ export class MigrationEffects {
     return this.exposedPromises.yield(PromiseKey.PARANOIA_ACCEPTED)
   }
 
-  private async migrateWallet(subscriber: Subscriber<Action>, wallet: AirGapWallet, mnemonic: string): Promise<void> {
+  private async migrateWallet(subscriber: Subscriber<Action>, wallet: AirGapWallet): Promise<void> {
     subscriber.next(actions.nextWallet({ publicKey: wallet.publicKey }))
-
-    await retry({
-      initArgs: '',
-      action: (bip39Passphrase: string) => this.migrationService.migrateWallet(wallet, { mnemonic, bip39Passphrase, persist: false }),
-      onFailure: async (error: any) => {
-        if (this.isInvalidBip39PassphraseError(error)) {
-          const bip39Passphrase: string | undefined = await this.askForBip39Passphrase(subscriber, wallet)
-          if (bip39Passphrase === undefined) {
-            subscriber.next(actions.walletSkipped({ publicKey: wallet.publicKey }))
-            return { type: 'abort' }
-          }
-
-          return {
-            type: 'retry',
-            nextArgs: bip39Passphrase
-          }
-        } else {
-          subscriber.next(actions.unknownError({ message: typeof error === 'string' ? error : error.message }))
-          return { type: 'abort' }
-        }
-      }
-    })
-  }
-
-  private async askForBip39Passphrase(subscriber: Subscriber<Action>, wallet: AirGapWallet): Promise<string | undefined> {
-    subscriber.next(actions.invalidBip39Passphrase({ protocolIdentifier: (await wallet.protocol.getIdentifier()), publicKey: wallet.publicKey }))
-
-    return this.exposedPromises.yield(PromiseKey.BIP39_PASSPHRASE)
+    await this.migrationService.migrateWallet(wallet, { persist: false })
   }
 
   private finish(): void {
@@ -287,7 +255,4 @@ export class MigrationEffects {
     }
   }
 
-  private isInvalidBip39PassphraseError(error: any): boolean {
-    return error.message?.toLowerCase().startsWith('invalid bip-39 passphrase')
-  }
 }

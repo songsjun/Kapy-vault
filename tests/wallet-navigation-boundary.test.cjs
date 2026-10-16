@@ -66,7 +66,7 @@ const draft = () => ({ id: 'fresh-secret', secretHex: '0000000000000000000000000
 
 test('URLs and missing state never authorize protected pages', async () => {
   const { navigation, access } = fixture()
-  for (const route of ['/accounts-list', '/secret-edit', '/bip85-show', '/deserialized-detail', '/transaction-signed', '/tabs/tab-scan']) {
+  for (const route of ['/accounts-list', '/secret-edit', '/bip85-show', '/deserialized-detail', '/transaction-signed', '/tabs/tab-scan', '/bitcoin-multisig']) {
     assert.equal(navigation.canActivate(route), false, route)
   }
   access.open(secret)

@@ -67,7 +67,9 @@ function alerts() {
     async create(options) {
       const completion = deferred()
       const alert = {
-        ...options, present: async () => { alert.presented = true },
+        ...options, domPasswordInputs: [{ value: 'PUBLIC TYPED DOM PASSWORD' }],
+        querySelectorAll: () => alert.domPasswordInputs,
+        present: async () => { alert.presented = true },
         onDidDismiss: () => completion.promise,
         dismiss: async (_value, role) => { completion.resolve({ role }); return true }
       }
@@ -189,8 +191,10 @@ test('an unknown password stays in the prompt, clears input and never opens acco
   await tick()
   const alert = prompt.instances[0]
   assert.equal(await alert.buttons[1].handler({ password: 'unknown' }), false)
+  assert.equal(alert.inputs[0].value, '', 'Ionic needs an explicit empty value to clear the previous DOM password')
   assert.equal(alert.message, 'wallet-access.unlock-error')
-  assert.equal(alert.inputs[0].value, undefined)
+  assert.equal(alert.domPasswordInputs[0].value, '', 'Clear actual typed DOM value before asynchronous verification')
+  assert.equal(alert.inputs[0].value, '')
   assert.equal(nav.calls.length, 0)
   alert.buttons[0].handler()
   await alert.dismiss(undefined, 'cancel')

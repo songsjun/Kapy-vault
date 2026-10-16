@@ -141,7 +141,8 @@ export class SecretsService {
       await this.walletAccess.unlock(secret, defaultPassword)
     } catch (error) {
       if (!committed) {
-        secret.secretHex = entropy
+        if (this.walletAccess.getOperationId() === epoch) secret.secretHex = entropy
+        else secret.flushSecret()
         delete secret.walletAccessVersion
       }
       throw error

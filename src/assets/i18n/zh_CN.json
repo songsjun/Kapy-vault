@@ -967,5 +967,43 @@
         "step2": "通过 SD 卡或 USB 存储设备将下载的文件从在线计算机复制到离线设备并替换旧安装。"
       }
     }
+  },
+  "bitcoin-multisig": {
+    "title": "Bitcoin 多签",
+    "intro": "使用当前已解锁的钱包参与 Bitcoin 多签。Sparrow 负责创建钱包、收集签名和广播交易。",
+    "network": "网络",
+    "sign-heading": "签署 PSBT",
+    "scan-help": "在 Sparrow 中点击 Show QR，并选择 UR 编码。扫描完整的动态二维码。",
+    "scan": "扫描 Sparrow PSBT",
+    "review": "审阅交易",
+    "export-heading": "导出参与者公钥",
+    "script-type": "多签脚本类型",
+    "account": "账户序号",
+    "legacy-account-help": "Legacy 使用 m/45'，不含账户序号。",
+    "export": "显示公钥二维码",
+    "export-help": "在 Sparrow 对应的多签密钥库中扫描此公钥二维码。两端网络和脚本类型必须一致。此处仅导出一位参与者，不包含完整多签钱包。",
+    "transaction": "未签名交易 ID",
+    "inputs": "输入",
+    "outputs": "全部输出",
+    "outputs-help": "核对每个目标地址和金额，包括预期的找零。本签名端不自动识别找零。",
+    "fee": "交易手续费",
+    "fee-unverified": "部分输入金额仅由 PSBT 提供。此处手续费根据这些金额计算，并非所有输入均提供了完整前序交易。",
+    "confirm-help": "确认这些输出后，为当前钱包添加签名。仅支持 SIGHASH_ALL。",
+    "sign": "确认并签名",
+    "cancel": "取消",
+    "result": "PSBT 已准备好返回 Sparrow",
+    "return-help": "在 Sparrow 中点击 Scan QR。Sparrow 会合并此 PSBT，并继续收集其余签名。",
+    "added": "新增签名数",
+    "already-signed": "本钱包已签名的输入数",
+    "fragments": "二维码分片数",
+    "fingerprint": "主密钥指纹",
+    "path": "派生路径",
+    "another": "开始下一次操作",
+    "done": "返回账户",
+    "export-error": "公钥导出失败。请检查账户序号，完成系统认证后重试。",
+    "scan-error": "无法读取 PSBT 二维码。请选择 UR 编码，并且只扫描一笔交易。重新开始扫描以重试。",
+    "review-error": "PSBT 无效或不受支持。请使用 PSBT v0、P2SH/P2SH-P2WSH/P2WSH 多签输入及 SIGHASH_ALL。此处不支持 Taproot 签名。",
+    "sign-error": "签名失败。请确认当前钱包与所选网络匹配所有输入，并重新完成系统认证。",
+    "single-request": "每次仅扫描一笔多签交易。"
   }
 }

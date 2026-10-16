@@ -89,6 +89,7 @@ export class SecretItemComponent implements OnInit, OnDestroy {
       const attempt = ++this.attempt
       const passwordInput = () => [{
         name: 'password',
+        value: '',
         type: 'password' as const,
         placeholder: this.translateService.instant('wallet-access.password'),
         attributes: { autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false' }
@@ -116,6 +117,8 @@ export class SecretItemComponent implements OnInit, OnDestroy {
               }
               const password = data.password
               data.password = ''
+              // Stencil does not reset a DOM value when the virtual input value stays unchanged.
+              alert.querySelectorAll<HTMLInputElement>('input[type="password"]').forEach((input) => { input.value = '' })
               this.unlocking = true
               try {
                 await this.walletAccess.unlock(this.secret, password)

@@ -1,9 +1,11 @@
 Wallet access in the original AirGap Vault
 
 Scope
-This implementation is in airgap-vault. The separate web and web-local projects
-are not part of this change. It targets a fresh installation; v1 data migration
-is not implemented. Android now requires API 23 or later. There is no idle timer.
+This implementation is in airgap-vault. The D/Pi wallet-password model has also been synchronized to the separate web
+and web-local projects. Those projects retain browser memory storage; web-local
+also retains its encrypted file backup and terminal idle-session mechanism.
+See their docs/WALLET_PASSWORD.zh-CN.txt for platform differences. Native v1 data
+migration is not implemented. Android now requires API 23 or later. There is no idle timer.
 
 User flow
 1. Create/import a mnemonic and save a named Secret with a confirmed nonempty

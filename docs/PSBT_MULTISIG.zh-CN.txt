@@ -1,0 +1,84 @@
+AirGap Vault App：与 Sparrow 配合的 PSBT 多签
+============================================
+
+入口与操作
+----------
+1. 打开一个已配置的 Secret，并使用钱包密码解锁。
+2. 在账户列表点击「Bitcoin 多签」。无需先添加普通 BTC 账户。
+3. 选择网络、脚本类型与账户序号，点击「显示公钥二维码」。
+   Legacy 使用 m/45'，不含账户序号。
+   Nested SegWit 使用 m/48'/coin'/account'/1'。
+   Native SegWit 使用 m/48'/coin'/account'/2'。
+4. 在 Sparrow 新建多签钱包，设置阈值与相同脚本类型。
+   在对应密钥库的扫码导入中扫描参与者的 crypto-account 二维码。
+   该二维码仅包含一位参与者的公开密钥信息。
+   如使用 xPub / Watch Only 入口，也可手动核对页面显示的指纹、路径和 xpub。
+5. Sparrow 创建交易并进入签名阶段，点击 Show QR，选择 UR 编码。
+6. Vault 点击「扫描 Sparrow PSBT」，核对全部输出和费用后确认签名。
+   App 原有扫码入口识别到传统多签 PSBT 后，也会进入此页面。
+   从原有扫码入口进入时，应先选择网络，再点击「审阅交易」。
+7. 在 Sparrow 点击 Scan QR，扫描 Vault 返回的 crypto-psbt 二维码。
+8. 对其他签名者重复操作。Sparrow 收齐签名后完成定稿和广播。
+
+签名范围
+--------
+支持 PSBT v0、标准 CHECKMULTISIG、SIGHASH_ALL、压缩公钥：
+P2SH、P2SH-P2WSH、P2WSH。支持 mainnet、testnet、signet、regtest。
+阈值从输入脚本读取；不是只支持固定的 2-of-3。
+同一 PSBT 可包含以上不同脚本类型，但每个输入都必须恰好匹配当前钱包的一把密钥。
+Legacy 支持 Sparrow 的 m/45'/change/index，以及完整 BIP45 cosigner/change/index 路径。
+SegWit 支持 BIP48 origin 与公开的 change/index 后缀。
+
+不支持 Taproot 多签、PSBT v2、自定义脚本、已定稿输入、混合单签输入，
+也不支持同一当前种子在一个输入中充当多位签名者。
+输入类型不受支持时明确拒绝，不会跳过输入后宣称完成。
+向 Taproot 等地址付款属于输出，可以正常显示和签署。
+
+已存在的本机有效签名不会重复添加。
+结果分别显示新增签名数与已经签名的输入数。
+返回 PSBT 保留其他参与者签名和未知字段，不在 Vault 中定稿或广播。
+PSBT 上限为 512 KiB、64 个输入、128 个输出、每个脚本最多 16 个公钥。
+Legacy redeemScript 还受 520 字节限制。
+动态 UR 扫描另有分片、帧长与累计大小限制。
+
+职责与安全边界
+--------------
+当前实现是独立签名端，不保存完整多签钱包策略，也不自动判断找零。
+界面显示每一个输出，用户应核对预期收款与找零地址。
+网络由用户选择；PSBT 本身不能可靠证明所属网络。
+完整前序交易会核对 txid、vout、金额及脚本。
+同时存在 nonWitnessUtxo 与 witnessUtxo 时，两者必须一致。
+Legacy 必须提供完整前序交易。
+SegWit 允许仅有 witnessUtxo，与 Sparrow 常规二维码兼容。
+此时界面明确说明手续费依据请求给定的金额计算，未由完整前序交易全部验证。
+
+密钥派生使用 App 当前已解锁 profile 的 BIP39 passphrase。
+默认钱包密码仅解密 Secret，其 BIP39 passphrase 为空。
+已登记的附加钱包使用原有 profile 规则；本功能不改变这些规则。
+导出公钥和签名均经原有 readEntropy 系统认证边界。
+不将助记词、seed、私钥或钱包密码放入页面、路由或公开状态。
+公钥配置只在当前操作中派生，不添加普通账户，不改变加密 Secret/恢复格式。
+上下文切换、锁定、离页、取消会清除扫码/审阅/二维码状态，拒绝迟到结果。
+
+实现与验证
+----------
+src/app/services/bitcoin-multisig/bitcoin-multisig.ts：纯 PSBT 校验、派生与签名。
+src/app/services/bitcoin-multisig/bitcoin-multisig-qr.ts：标准 UR 编解码。
+src/app/services/bitcoin-multisig/bitcoin-multisig.service.ts：原生认证与 context 边界。
+src/app/pages/bitcoin-multisig/：扫码、审阅、导出及结果页面。
+
+Node 18 环境下：
+node --test tests/*.test.cjs
+node node_modules/typescript/bin/tsc --project src/tsconfig.app.json --noEmit
+node node_modules/@angular/cli/bin/ng build --configuration ci --progress=false
+
+测试只使用公开种子；覆盖三类脚本、多网络、独立第二方签名/定稿、
+已有签名/未知字段保留、错误输入拒绝、动态 UR 往返、上下文撤销及页面迟到结果。
+这些自动检查不等同于真实手机相机、系统认证或 Sparrow 桌面端扫码联调。
+
+参考规范
+--------
+https://github.com/bitcoin/bips/blob/master/bip-0174.mediawiki
+https://github.com/bitcoin/bips/blob/master/bip-0143.mediawiki
+https://github.com/bitcoin/bips/blob/master/bip-0048.mediawiki
+https://www.sparrowwallet.com/docs/airgapped-wallet-qr.html

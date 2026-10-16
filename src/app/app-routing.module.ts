@@ -14,6 +14,10 @@ const routes: Routes = [
     loadChildren: () => import('./pages/tab-settings/tab-settings.module').then((m) => m.TabSettingsPageModule)
   },
   { path: 'account-add', loadChildren: () => import('./pages/account-add/account-add.module').then((m) => m.AccountAddPageModule) },
+  {
+    path: 'bitcoin-multisig',
+    loadChildren: () => import('./pages/bitcoin-multisig/bitcoin-multisig.module').then((m) => m.BitcoinMultisigPageModule)
+  },
   { path: 'secret-setup', loadChildren: () => import('./pages/secret-setup/secret-setup.module').then((m) => m.SecretSetupPageModule) },
   {
     path: 'secret-setup/initial',

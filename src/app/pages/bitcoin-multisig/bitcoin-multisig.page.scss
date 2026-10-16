@@ -1,0 +1,7 @@
+.break { overflow-wrap: anywhere; }
+.qr { display: flex; justify-content: center; padding: 16px 0; }
+.camera-window { height: 44vh; display: flex; justify-content: center; align-items: center; }
+.camera-window img { max-height: 100%; width: 85%; }
+ion-content.scanning { --background: transparent; }
+zxing-scanner { display: block; min-height: 240px; }
+ion-item ion-select { max-width: 100%; }

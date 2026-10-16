@@ -64,6 +64,7 @@ export class DeserializedDetailEffects {
     switchMap(([_, payload]) => {
       try {
         this.assertRequestContext(this.pageContextId)
+        if (!payload) throw new Error('No signing request is loaded.')
         return of(actions.runningBlockingTask({ task: this.identifyPayloadTask(payload), userInput: { contextId: this.pageContextId } }))
       } catch {
         return of(actions.unknownError({ message: 'Open a Secret and scan the request again.' }))
@@ -273,8 +274,9 @@ export class DeserializedDetailEffects {
     this.access.assertContext(contextId)
   }
 
-  private async handlePayload(payload: Payload, userInput: actions.UserInput): Promise<Action> {
+  private async handlePayload(payload: Payload | undefined, userInput: actions.UserInput): Promise<Action> {
     this.assertRequestContext(userInput.contextId)
+    if (!payload) throw new Error('No signing request is loaded.')
     switch (payload.mode) {
       case Mode.SIGN_TRANSACTION: return this.signTransactions(payload.data, userInput.contextId)
       case Mode.SIGN_MESSAGE: return this.signMessages(payload.data, userInput.contextId)

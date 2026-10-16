@@ -338,12 +338,14 @@ export const selectFinalPayload = createSelector(
   selectSignedTransactions,
   selectUnsignedMessages,
   (
-    mode: Mode,
+    mode: Mode | undefined,
     unsignedTransactions: UIResource<DeserializedUnsignedTransaction[]>,
     _signedTransactions: UIResource<DeserializedSignedTransaction[]>,
     unsignedMessages: UIResource<DeserializedUnsignedMessage[]>
-  ): Payload => {
+  ): Payload | undefined => {
     switch (mode) {
+      case undefined:
+        return undefined
       case Mode.SIGN_TRANSACTION:
         return {
           mode,

@@ -24,6 +24,9 @@
 </ion-header>
 
 <ion-content *ngIf="canView" class="ion-padding-horizontal">
+  <ion-button *ngIf="!deleteView" expand="block" fill="outline" (click)="openBitcoinMultisig()">
+    {{ 'bitcoin-multisig.title' | translate }}
+  </ion-button>
   <ng-container *ngIf="wallets$ && (wallets$ | async | walletFilter: { status: AirGapWalletStatus.ACTIVE } | async) as wallets">
     <ion-list>
       <ng-container *ngFor="let wallet of wallets">

@@ -1,6 +1,6 @@
 import { Injectable } from '@angular/core'
 import { ProtocolService } from '@airgap/angular-core'
-import { AirGapWallet, AirGapWalletStatus, ProtocolSymbols } from '@airgap/coinlib-core'
+import { AirGapWallet, AirGapWalletStatus, MainProtocolSymbols, ProtocolSymbols } from '@airgap/coinlib-core'
 import { BIP32Factory } from '@airgap/coinlib-core/dependencies/src/bip32-5.0.1/src/index'
 import * as ecc from '@airgap/coinlib-core/dependencies/src/@bitcoinerlab/secp256k1-1.2.0/src/index'
 import { randomBytes } from '@airgap/coinlib-core/dependencies/src/@noble/hashes-1.8.0/src/utils'
@@ -21,6 +21,8 @@ export interface WalletAccountConfig {
   customDerivationPath: string
   status: AirGapWalletStatus
   addressIndex?: number
+  /** Full flattened address array length, including both Bitcoin change chains. */
+  addressCount?: number
 }
 
 interface WalletPassphrase {
@@ -294,6 +296,7 @@ export class WalletAccessService {
       const account: WalletAccountConfig = { ...config, id: duplicate?.id ?? this.newId(), networkIdentifier, status: AirGapWalletStatus.ACTIVE }
       this.assertContext(epoch)
       const wallet = await this.deriveWallet(entropy, this.current.passphrase, account)
+      account.addressCount = wallet.addresses.length
       this.assertContext(epoch)
       if (duplicate) {
         Object.assign(duplicate, account)
@@ -332,6 +335,8 @@ export class WalletAccessService {
     }
     account.status = wallet.status
     account.addressIndex = wallet.addressIndex
+    account.addressCount = wallet.addresses.length
+    this.validateConfig(account)
     await this.commitRegistry(this.current.secret, registry, epoch)
   }
 
@@ -387,19 +392,34 @@ export class WalletAccessService {
 
   private async deriveWallet(entropy: string, passphrase: string, config: WalletAccountConfig): Promise<AirGapWallet> {
     const protocol = await this.protocols.getProtocol(config.protocolIdentifier, config.networkIdentifier)
+    const addressIndex = config.addressIndex ?? 0
+    if (config.addressCount === undefined && addressIndex > 1) {
+      throw new Error('The stored selected address needs its original address count. Restore this account from its mnemonic, passphrase and derivation path, or add the account again.')
+    }
+    const identifier = await protocol.getIdentifier()
+    const twoChains = config.isHDWallet && [MainProtocolSymbols.BTC, MainProtocolSymbols.BTC_SEGWIT,
+      MainProtocolSymbols.BTC_TAPROOT, MainProtocolSymbols.GRS].some((symbol) => identifier.startsWith(symbol))
+    if (twoChains && config.addressCount !== undefined && config.addressCount % 2 !== 0) {
+      throw new Error('Invalid stored Bitcoin address count')
+    }
+    const amount = config.addressCount === undefined ? 1 : twoChains ? config.addressCount / 2 : 1
     const mnemonic = entropyToMnemonic(entropy)
     const seed = await mnemonicToSeed(mnemonic, passphrase)
-    const fingerprint = Buffer.from(this.bip32.fromSeed(new Uint8Array(seed)).fingerprint).toString('hex')
-    // Preserve AirGap's per-protocol mnemonic/password derivation, including Substrate.
-    const publicKey = config.isHDWallet
-      ? await protocol.getExtendedPublicKeyFromMnemonic(mnemonic, config.customDerivationPath, passphrase)
-      : await protocol.getPublicKeyFromMnemonic(mnemonic, config.customDerivationPath, passphrase)
-    const wallet = new AirGapWallet(protocol, publicKey, config.isHDWallet, config.customDerivationPath, fingerprint, config.status)
-    wallet.addresses = await wallet.deriveAddresses(1)
-    wallet.addressIndex = config.addressIndex ?? 0
-    this.walletIds.set(wallet, config.id)
-    seed.fill(0)
-    return wallet
+    try {
+      const fingerprint = Buffer.from(this.bip32.fromSeed(new Uint8Array(seed)).fingerprint).toString('hex')
+      // Preserve AirGap's per-protocol mnemonic/password derivation, including Substrate.
+      const publicKey = config.isHDWallet
+        ? await protocol.getExtendedPublicKeyFromMnemonic(mnemonic, config.customDerivationPath, passphrase)
+        : await protocol.getPublicKeyFromMnemonic(mnemonic, config.customDerivationPath, passphrase)
+      const wallet = new AirGapWallet(protocol, publicKey, config.isHDWallet, config.customDerivationPath, fingerprint, config.status)
+      wallet.addresses = await wallet.deriveAddresses(amount)
+      if ((config.addressCount !== undefined && wallet.addresses.length !== config.addressCount) || addressIndex >= wallet.addresses.length) {
+        throw new Error('The stored selected address does not match the derived account address list')
+      }
+      wallet.addressIndex = addressIndex
+      this.walletIds.set(wallet, config.id)
+      return wallet
+    } finally { seed.fill(0) }
   }
 
   private validatePassword(password: string): void {
@@ -411,7 +431,10 @@ export class WalletAccessService {
   private validateConfig(config: Omit<WalletAccountConfig, 'id' | 'status'>): void {
     if (typeof config.protocolIdentifier !== 'string' || !config.protocolIdentifier || typeof config.isHDWallet !== 'boolean' ||
       typeof config.customDerivationPath !== 'string' || !/^m(?:\/[0-9]+['h]?)*$/.test(config.customDerivationPath) ||
-      (config.networkIdentifier !== undefined && typeof config.networkIdentifier !== 'string')) {
+      (config.networkIdentifier !== undefined && typeof config.networkIdentifier !== 'string') ||
+      (config.addressCount !== undefined && (!Number.isSafeInteger(config.addressCount) || config.addressCount < 1 || config.addressCount > 10000)) ||
+      (config.addressIndex !== undefined && (!Number.isSafeInteger(config.addressIndex) || config.addressIndex < 0 ||
+        config.addressIndex >= (config.addressCount ?? 10000)))) {
       throw new Error('Invalid account configuration')
     }
   }

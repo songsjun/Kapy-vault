@@ -32,6 +32,13 @@ export class AccountsListPage {
     return this.active && !!this.secret && this.walletAccess.isUnlocked(this.secret)
   }
 
+  public openBitcoinMultisig(): void {
+    if (!this.canView) return
+    this.navigationService.routeWithState('/bitcoin-multisig', {
+      contextId: this.walletAccess.getContextId()
+    }).catch(handleErrorLocal(ErrorCategory.IONIC_NAVIGATION))
+  }
+
   constructor(
     private readonly platform: Platform,
     private readonly navigationService: NavigationService,
