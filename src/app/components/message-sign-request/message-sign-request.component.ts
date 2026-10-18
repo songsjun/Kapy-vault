@@ -60,9 +60,9 @@ export class MessageSignRequestComponent {
 
   constructor(private readonly clipboardService: ClipboardService) {}
 
-  public async copyEncodedMessage(): Promise<void> {
-    if (this._rawMessages?.[0]?.data) {
-      await this.clipboardService.copyAndShowToast(this._rawMessages[0].data)
+  public async copyEncodedMessage(index: number = 0): Promise<void> {
+    if (this._rawMessages?.[index]?.data) {
+      await this.clipboardService.copyAndShowToast(this._rawMessages[index].data)
     }
   }
 }

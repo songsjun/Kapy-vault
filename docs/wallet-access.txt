@@ -70,8 +70,11 @@ Signing and root-secret exports continue to read native storage, so native
 system-authentication policy still applies. The already-unwrapped DEK removes
 the need for another wallet password. Management mutations are serialized and
 write a single encrypted record. iOS updates use Keychain SecItemUpdate. The
-existing Android file writer is not crash-atomic; no power-loss durability claim
-is made for that backend.
+Android writer completes authentication and encryption before staging a complete
+record, syncs the staging file, then atomically renames it over the committed
+record. Failed or cancelled writes preserve the previous record. Directory-entry
+fsync and recovery's two-file transaction are not implemented; no general
+power-loss durability claim is made for that backend.
 
 All slots protect the SAME entropy. Any registered Pi can cryptographically
 unwrap that entropy; a modified client could therefore derive the empty-passphrase

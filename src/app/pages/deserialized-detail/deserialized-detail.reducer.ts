@@ -70,6 +70,14 @@ const initialState: FeatureState = {
 export const reducer = createReducer(
   initialState,
   on(actions.viewClosed, actions.operationCancelled, () => initialState),
+  on(actions.invalidTransactionInputs, (_state, { message }) => ({
+    ...initialState,
+    alert: {
+      id: generateGUID(),
+      value: { type: 'unknownError' as UnknownErrorAlert['type'], message },
+      status: UIActionStatus.PENDING
+    }
+  })),
   on(actions.navigationDataLoading, (state) => ({
     ...state,
     loader: undefined,

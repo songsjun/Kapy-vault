@@ -13,7 +13,6 @@ import java.security.Key
 import java.security.MessageDigest
 import javax.crypto.Cipher
 import javax.crypto.CipherInputStream
-import javax.crypto.CipherOutputStream
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 import kotlin.concurrent.thread
@@ -74,34 +73,31 @@ class SecureFileStorage(private val masterSecret: Key?, private val salt: ByteAr
     fun write(fileKey: String, fileData: String, secret: ByteArray = "".toByteArray(), success: () -> Unit, error: (Exception) -> Unit, requestAuthentication: (Int, () -> Unit, () -> Unit) -> Unit) {
         thread {
             try {
+                // Authentication and all cipher setup must succeed before any
+                // file is opened, even though SecureFile also stages writes.
+                val fsCipher = Cipher.getInstance(if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    Constants.FILESYSTEM_CIPHER_ALGORITHM
+                } else {
+                    Constants.FILESYSTEM_FALLBACK_CIPHER_ALGORITHM
+                })
+                fsCipher.init(Cipher.ENCRYPT_MODE, masterSecret)
+                val encryptionSecret = encryptionSecret(secret, hashForKey(fileKey))
+                val specificSecretKey = SecretKeySpec(encryptionSecret, 0, encryptionSecret.size, "AES")
+                val specificSecretCipher = Cipher.getInstance(Constants.FILESYSTEM_CIPHER_ALGORITHM)
+                specificSecretCipher.init(Cipher.ENCRYPT_MODE, specificSecretKey, IvParameterSpec(ivForKey(fileKey)))
+
+                // CipherOutputStream.close() suppresses checked doFinal failures.
+                // Finish both layers explicitly before committing any ciphertext.
+                val specificCiphertext = specificSecretCipher.doFinal(fileData.toByteArray())
+                val filesystemCiphertext = fsCipher.doFinal(specificCiphertext)
                 SecureFile(baseDir, hashForKey(fileKey)).output { fileOutputStream ->
-                    val fsCipher =
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                                Cipher.getInstance(Constants.FILESYSTEM_CIPHER_ALGORITHM)
-                            } else {
-                                Cipher.getInstance(Constants.FILESYSTEM_FALLBACK_CIPHER_ALGORITHM)
-                            }
-                    fsCipher.init(Cipher.ENCRYPT_MODE, masterSecret)
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                         fileOutputStream.write(fsCipher.iv)
                     }
-                    val fsCipherOutputStream = CipherOutputStream(fileOutputStream, fsCipher)
-
-                    val encryptionSecret = encryptionSecret(secret, hashForKey(fileKey))
-
-                    val specificSecretKey = SecretKeySpec(encryptionSecret, 0, encryptionSecret.size, "AES")
-                    val specificSecretCipher = Cipher.getInstance(Constants.FILESYSTEM_CIPHER_ALGORITHM)
-
-                    specificSecretCipher.init(Cipher.ENCRYPT_MODE, specificSecretKey, IvParameterSpec(ivForKey(fileKey)))
-
-                    CipherOutputStream(fsCipherOutputStream, specificSecretCipher).use {
-                        it.write(fileData.toByteArray())
-                        it.flush()
-                    }
-
-                    authAttemptNo = 0
-                    success()
+                    fileOutputStream.write(filesystemCiphertext)
                 }
+                authAttemptNo = 0
+                success()
             } catch (e: Exception) {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                     if (e is UserNotAuthenticatedException) {

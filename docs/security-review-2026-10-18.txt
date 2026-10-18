@@ -1,0 +1,85 @@
+AirGap Vault 源码审计及修复记录
+日期：2026-10-18
+基线：airgap-vault 60fb86a（本地定制版本，不代表当前官方发行版）
+范围：原生 App 的 Secret 存储、扫码签名、单签 PSBT、模块导入；补查 web 与 web-local 对应路径。
+本次已修复五类问题。各项等级结合实际触发条件判定，不能据此宣称完成全部依赖、全部币种和全部平台的安全认证。
+
+1. 消息只展示首条，却批量签署整个请求。
+处置：P0 发布阻断项。外部消息请求的审阅与授权边界不一致。
+原路径：BaseIACService 按消息类型分组 → IACService 接收数组 → message-sign-request 模板只读取 [0] → signMessages 对数组全部签名。
+影响：用户确认首条可见消息时，还可能签出未展示的后续授权。影响取决于后续消息内容及协议。
+修复：IAC 入口拒绝非单条消息；实际签名前再次拒绝。界面逐条渲染并复制对应原文。App、Web、Local 三份同步。
+位置：src/app/services/iac/iac.service.ts:142；src/app/pages/deserialized-detail/deserialized-detail.effects.ts:350；src/app/components/message-sign-request/。
+证据：tests/message-signing-review.test.cjs 的 12 项跨版本回归使用无害文本和 stub signer。对原 HEAD 源码运行时 9 项失败；修后全部通过。
+兼容性：消息须逐条扫描、审阅和签署。暂不支持批量消息签名。
+
+2. Android 认证取消或加密失败会破坏原 Secret。
+处置：发布阻断。若设备中记录是唯一可恢复副本，影响可达 P0；有独立助记词备份时仍属严重数据丢失缺陷。
+原路径：SecureFile.output 先截断主文件，随后 Cipher.init 才触发认证过期；取消后文件保持 0 字节。
+正常路径：解锁后超过原生 15 秒认证期 → 添加账户/注册密码/修改密码 → 取消系统认证 → 关闭钱包或后台。
+若成功重试仍可能用内存副本救回；退出会话后该自救路径消失。原生 RecoveryKey 并不在主文件损坏时自动回退。
+独立复核还发现 CipherOutputStream.close 会吞 BadPaddingException/IllegalBlockSizeException。仅改原子写而保留该流仍可能提交不完整密文。
+修复：先完成认证及两层显式 doFinal；再写同目录临时文件，flush、fd.sync、关闭后 Os.rename 原子替换。成功回调在提交后执行；失败保留旧记录。延迟 recovery-key save 语义保留。
+位置：android/app/src/main/java/it/airgap/vault/plugin/securityutils/storage/SecureFile.kt:40；SecureFileStorage.kt:83。
+证据：scripts/test-android-secure-storage.py 编译真实产品 Kotlin，使用真实 AES 与 JDK 文件 I/O。15 个场景通过，包括两层认证失败、三类 finalize 异常、写入/sync/rename 失败、成功时序、延迟提交及 normal/paranoia/recovery 往返。
+原始取消认证复现：beforeBytes=38；bytesAtPrompt=0；afterCancelBytes=0。同一回归在原 HEAD 上失败。独立复核新增 checked-finalize 场景也先暴露了首轮修复的问题，再验证最终修复通过。
+边界：Keystore、POSIX rename 用 JVM 边界替代；没有执行真机故障注入。未增加目录项 fsync 或 recovery 的跨文件事务。
+
+3. 单签 Bitcoin PSBT 展示金额与签名使用的前序输出不一致。
+处置：P1，签名安全发布阻断项。
+已核实可达性：三份当前 BitcoinModule('btc') 均返回 BitcoinLegacyProtocolImpl。
+旧详情 renderer 优先读取 witnessUtxo；bitcoinjs 的 Legacy/Segwit 签名路径优先读取 nonWitnessUtxo。两字段同时存在时未检查一致性。
+只读公开样本：前序输出 100000 sat，本次输出 90000 sat，witness 字段声称 91000 sat。旧界面显示手续费 1000 sat，实际前序输出减本次输出为 10000 sat。未为此样本生成签名或广播。
+修复：在详情解析前、整批签名前及取熵前验证；检查完整前序交易 hash/vout、两字段金额与脚本一致、必要 UTXO 字段及非负手续费。拒绝时清 mode、button、payload、raw 并撤销页面授权，不能退回原始数据盲签。
+位置：src/app/services/bitcoin/psbt-input-validation.ts；src/app/pages/deserialized-detail/deserialized-detail.effects.ts:209、299、330；deserialized-detail.reducer.ts:73。三份源码同步。
+证据：tests/psbt-input-validation.test.cjs 跨三版本 15 项通过；独立复查再核对 5 种正常 Legacy/Segwit/Taproot 输入组合，以及协议查询期间失效上下文不读秘密、不调用 signer。
+兼容性：Legacy 需要完整前序交易；Segwit/Taproot 需要当前 renderer 所需的 witnessUtxo。普通 BTC 非 PSBT 与 Segwit/Taproot 仅 nonWitnessUtxo 请求会明确拒绝。多签独立流程未修改。witness-only 并不代表已验证链上前序交易。
+已排除：依赖中旧 raw legacy-signing.js 的存在本身不能证明 App 调用该路径；没有据此误改上游库。
+
+4. Android ZIP 模块预览可越过暂存目录写文件。
+处置：P1。已核实源码链路；主要适用于缺少 Android 14 平台 ZIP 路径检查的旧系统。
+原路径：选择模块 ZIP → 先解压 → 再解析/展示模块及验签。Zip.kt 拼接 entry.name 后直接写文件，没有 canonical containment 检查。
+影响：预览恶意文件即可越界写 App 可写目录；无需按下安装。持久模块目录在启动时读取 manifest 和 include，没有在同一路径重新验签。
+修复：将实际解压器提取为 ZipArchive；拒绝绝对路径、.. 和反斜杠；canonical 路径必须在 root+separator 内，包含已有 symlink 的边界。保留 Mac 元数据过滤并支持缺少目录条目的正常 ZIP。
+位置：android/app/src/main/java/it/airgap/vault/plugin/zip/ZipArchive.kt:14；Zip.kt:46。
+证据：scripts/test-android-zip.py 直接编译产品提取器和 JUnit。4 项通过，覆盖目录逃逸、相似前缀、symlink、正常嵌套与元数据。把 HEAD 原解压方法原样提取到仅加调用包装的 JVM 对照后，同一 4 项均失败。
+版本边界：Android 当前 targetSdk=35；Android 14 对 target>=34 的标准 ZipInputStream 另有平台防护。不能把此路径无条件推广为所有 Android 版本均可利用。真机链路未执行。
+参考：https://developer.android.com/privacy-and-security/risks/zip-path-traversal
+参考：https://developer.android.com/about/versions/14/behavior-changes-14
+
+5. web-local 的未保存助记词草稿不受五分钟闲置保护。
+处置：P2；仅归属本地 Web 派生版，不误报为原生 P0。
+原路径：会话仅在已保存 Secret 数量>0 时启动计时。首次生成、导入和恢复中的草稿可无限保留。
+原复现：推进 24 小时并 resume，sessionActive=false、idleTimers=0，草稿仍在且可显示。
+修复：敏感流程本身激活现有计时；终止时清输入、草稿、恢复份额和导航授权；异步生成/解密/保存完成后再次检查。只有可信活动续期，欢迎页渲染本身不启动计时。
+位置：../web-local/src/app/services/session/session-guard.ts:20；vault-session.service.ts:45；services/navigation/draft-secret-access.ts 与相关页面清理。
+独立复核修正了正常销毁恢复输入页会误清全局份额的回归：service 保存独立数组副本，普通离页只清本地输入，终止会话才清全局份额。实际 2-of-3/3-of-3 恢复及过期清理回归通过。
+证据：../web-local/tests/draft-idle-session.test.cjs。临时恢复旧计时激活条件后关键新测试失败；最终版本通过。
+真实 Chromium UI：输入公开 BIP39 助记词，不保存 Secret；active=true、persistedSecrets=0。壁钟推进五分钟后的首次真实点击触发文档替换；inactive/noSecret/noDraftPage/noPlaintextStorage 均为 true。
+UI 夹具：../web-local/tests/browser/verify-draft-idle.js。截图位于 ../web-local/output/playwright/security-draft-*.png。
+
+明确保留的设计边界
+D/Pi 密码槽仍共享基础熵及 DEK。已登记 Pi 的持有者使用修改客户端可恢复基础熵和空 BIP39 口令的默认钱包；不能据此宣称获得其它 Pi 原文或所有其它 Pi 钱包。
+这是 docs/wallet-access.txt 和两份 Web 密码文档已经明确披露的设计，不是本次新增确认的未知 P0。本次未改变格式、口令派生规则或做无授权数据迁移。
+Electron nodeIntegration=true 是风险放大因素；本轮没有证实来自外部输入的注入链，未单独标为 P0。
+
+最终验证
+App：node --test tests/*.test.cjs，240/240，通过，无跳过。
+Web：业务及 browser platform 单元测试，279/279，通过，无跳过。
+Local：业务、browser platform 及 file platform 单元测试，452/452，通过，无跳过。
+三份 TypeScript 检查通过；Web/Local 平台边界检查通过。
+三份 Angular 构建通过；App 优化构建产物在 /tmp/kapyvault-security-app-build；Web www 和 Local dist 已重建。
+Local verify:file 通过：127 个 classic scripts、1689 项资源完整性通过。
+EVM decoder/renderer smoke 在 App 与 Web 通过。
+Chromium 已完成公开助记词导入、密码保存、账户派生、手动请求、交易审阅、签名与响应验签，0 page errors；禁止运行时 file/HTTP fetch 和 XHR，无广播。
+该 UI 签名夹具通过浏览器 hash 进入 Settings，保留已打开钱包；没有把返回 Secrets 仍保留授权作为通过条件。
+
+airgap-vault/output/security-review-2026-10-18/validation.json 与同目录日志保存可复查结果。
+限制：浏览器使用 HTTP 提供同一 dist，并非真实 file://。未构建完整 APK 或安装到 Android/iOS 真机。Android Gradle 离线配置因缺少指定版本插件缓存失败，以真实 Kotlin/JVM 测试交叉验证存储与 ZIP。构建使用当前 Node 25.6.1，Angular 提示其非 LTS；未据此声称完成项目推荐 Node 18 全工具链认证。保留已有 CommonJS/CSS budget 构建警告。
+所有测试仅使用公开数据。没有读取真实钱包、发送外部消息或广播交易。
+
+后续 iPhone 安装（用户另行要求，2026-10-18）
+已使用现有签名配置构建 Kapy Vault 3.1.0 build 4（ca.kapy.vault），并覆盖安装到 P18。原生构建及 codesign 校验通过；包内 1859 个前端文件与本轮修复构建逐项 SHA-256 一致。设备应用列表确认 build 4。未执行卸载或数据清除。设备锁屏导致启动请求被 iOS 拒绝，尚未完成真机运行/功能验收。凭证：output/iphone-security-install-2026-10-18/receipt.json。
+再次安装验证：用户再次要求安装后，已成功覆盖安装同一 build 4，并通过 devicectl 成功启动，进程号 28927。此前锁屏导致的启动阻碍已解除；未执行钱包内容或交易功能的真机测试。
+
+推送前检查：新增消息/PSBT 回归测试已改为从仓库自身路径加载 App，支持任意克隆目录名；缺少可选 Web 兄弟目录时显式跳过对应交叉检查。本地三版本 27 项目标回归通过；隔离目录、重命名仓库且无兄弟目录时，App 的 9 项检查通过，4 项可选兄弟目录检查显式跳过。产品源码未因此变更。

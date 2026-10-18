@@ -32,6 +32,7 @@ import { InteractionOperationType, InteractionService } from '../../services/int
 import { NavigationService } from '../../services/navigation/navigation.service'
 import { SecretsService } from '../../services/secrets/secrets.service'
 import { WalletAccessService } from '../../services/wallet-access/wallet-access.service'
+import { PsbtInputValidationError, validatePsbtTransactionInputs } from '../../services/bitcoin/psbt-input-validation'
 
 import * as actions from './deserialized-detail.actions'
 import * as fromDeserializedDetail from './deserialized-detail.reducer'
@@ -136,8 +137,12 @@ export class DeserializedDetailEffects {
 
         this.assertRequestContext(state.contextId)
         return actions.navigationDataLoaded({ mode, title, button, transactions, messages, raw })
-      } catch {
+      } catch (error) {
         try { this.assertRequestContext(state.contextId) } catch { return actions.operationCancelled() }
+        if (error instanceof PsbtInputValidationError) {
+          this.pageContextId = undefined
+          return actions.invalidTransactionInputs({ message: error.message })
+        }
         return actions.navigationDataLoadingError({ mode, title, button, raw })
       }
     } else {
@@ -201,6 +206,7 @@ export class DeserializedDetailEffects {
           ([_, request]: [AirGapWallet, IACMessageDefinitionObjectV3]): boolean => request.type === IACMessageType.TransactionSignRequest
         )
         .map(async ([wallet, request]: [AirGapWallet, IACMessageDefinitionObjectV3]): Promise<DeserializedUnsignedTransaction> => {
+          await this.validateTransactionInputs(wallet, request.payload as UnsignedTransaction)
           let details: IAirGapTransaction[]
           if (await this.checkIfSaplingTransaction(request.payload as UnsignedTransaction, request.protocol)) {
             details = await this.transactionService.getDetailsFromIACMessages([request], {
@@ -287,6 +293,12 @@ export class DeserializedDetailEffects {
   private async signTransactions(unsignedTransactions: DeserializedUnsignedTransaction[], contextId: number): Promise<Action> {
     try {
       this.assertRequestContext(contextId)
+      // Reject an invalid batch before any member can read entropy or sign.
+      for (const transaction of unsignedTransactions) {
+        this.access.assertWallet(transaction.wallet)
+        await this.validateTransactionInputs(transaction.wallet, transaction.data)
+        this.assertRequestContext(contextId)
+      }
       const transactions: DeserializedSignedTransaction[] = await Promise.all(unsignedTransactions.map(async (transaction) => {
         const signed = await this.signTransaction(transaction.wallet, transaction.data, transaction.iacContext, contextId)
         return {
@@ -297,15 +309,26 @@ export class DeserializedDetailEffects {
       }))
       this.assertRequestContext(contextId)
       return actions.transactionsSigned({ transactions, contextId })
-    } catch {
+    } catch (error) {
       try { this.assertRequestContext(contextId) } catch { return actions.operationCancelled() }
+      if (error instanceof PsbtInputValidationError) {
+        this.pageContextId = undefined
+        return actions.invalidTransactionInputs({ message: error.message })
+      }
       return actions.unknownError({ message: 'This signing request does not match the currently opened wallet.' })
     }
+  }
+
+  private async validateTransactionInputs(wallet: AirGapWallet, transaction: UnsignedTransaction): Promise<void> {
+    const identifier = await wallet.protocol.getIdentifier()
+    validatePsbtTransactionInputs(identifier, transaction)
   }
 
   private async signTransaction(wallet: AirGapWallet, transaction: UnsignedTransaction, iacContext: IACContext | undefined, contextId: number): Promise<string> {
     this.assertRequestContext(contextId)
     this.access.assertWallet(wallet)
+    await this.validateTransactionInputs(wallet, transaction)
+    this.assertRequestContext(contextId)
     const secret = this.access.getCurrentSecret()
     const entropy = await this.secretsService.retrieveEntropyForSecret(secret)
     this.assertRequestContext(contextId)
@@ -323,6 +346,10 @@ export class DeserializedDetailEffects {
   private async signMessages(unsignedMessages: DeserializedUnsignedMessage[], contextId: number): Promise<Action> {
     try {
       this.assertRequestContext(contextId)
+      // Recheck here because navigation or persisted state can bypass the scan handler.
+      if (!Array.isArray(unsignedMessages) || unsignedMessages.length !== 1) {
+        return actions.unknownError({ message: 'Sign one message at a time. Scan and review each message separately.' })
+      }
       const messages: DeserializedSignedMessage[] = await Promise.all(unsignedMessages.map(async (message) => {
         const signature = await this.signMessage(message.data, message.iacContext, message.wallet, contextId)
         return {

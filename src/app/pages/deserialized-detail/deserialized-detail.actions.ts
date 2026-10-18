@@ -43,6 +43,7 @@ export const navigationDataLoadingError = createAction(
   props<{ mode: Mode; title: string; button: string | undefined; raw: string }>()
 )
 export const invalidData = createAction(`[${featureName}] Invalid Navigation Data`)
+export const invalidTransactionInputs = createAction(`[${featureName}] Invalid Transaction Inputs`, props<{ message: string }>())
 
 /**************** User Interaction ****************/
 

@@ -1,7 +1,6 @@
 package it.airgap.vault.plugin.zip
 
 import android.net.Uri
-import android.os.Environment
 import androidx.lifecycle.lifecycleScope
 import com.getcapacitor.Plugin
 import com.getcapacitor.PluginCall
@@ -16,11 +15,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileInputStream
-import java.io.FileOutputStream
 import java.io.IOException
 import java.io.InputStream
-import java.util.zip.ZipEntry
-import java.util.zip.ZipInputStream
 
 @CapacitorPlugin
 class Zip : Plugin() {
@@ -46,39 +42,9 @@ class Zip : Plugin() {
         val fromStream = getInputStream(from, directory) ?: throw IOException("Failed to create `to` InputStream")
         val outFile = getFile(to, toDirectory)
 
-        ZipInputStream(fromStream).unzip(outFile)
-    }
-
-    private suspend fun ZipInputStream.unzip(destination: File) {
-        use {
-            while (true) {
-                val zipEntry = nextEntry ?: break
-                it.unzip(zipEntry, destination)
-                withContext(Dispatchers.IO) {
-                    closeEntry()
-                }
-            }
-        }
-    }
-
-    @Throws(IOException::class)
-    private suspend fun ZipInputStream.unzip(entry: ZipEntry, destination: File) {
-        val file = File(destination, entry.name).takeIf { shouldCopy(it) } ?: return
-
-        if (entry.isDirectory) {
-            if (!file.isDirectory && !file.mkdirs()) throw IOException("Failed to create directory ${file.path}")
-            return
-        }
-
         withContext(Dispatchers.IO) {
-            FileOutputStream(file).use { this@unzip.copyTo(it) }
+            ZipArchive.extract(fromStream, outFile)
         }
-    }
-
-    private fun shouldCopy(file: File): Boolean {
-        val isIgnored = ignoredFiles.contains(file.name)
-
-        return !isIgnored && file.parentFile?.let { shouldCopy(it) } ?: true
     }
 
     @Throws(IOException::class)
@@ -129,10 +95,4 @@ class Zip : Plugin() {
         const val TO_DIRECTORY = "toDirectory"
     }
 
-    private companion object {
-        val ignoredFiles = setOf(
-            "__MACOSX",
-            ".DS_Store"
-        )
-    }
 }

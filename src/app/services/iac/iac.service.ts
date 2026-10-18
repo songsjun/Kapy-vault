@@ -138,6 +138,16 @@ export class IACService extends BaseIACService {
     if (contextId === undefined) return false
     const messageDefinitionObjects: IACMessageDefinitionObjectV3[] = messageWrapper.result
 
+    // A single approval covers one reviewed message. Do not accept hidden batches.
+    if (!Array.isArray(messageDefinitionObjects) || messageDefinitionObjects.length !== 1) {
+      await this.uiEventService.showTranslatedAlert({
+        header: 'Sign one message at a time',
+        message: 'Scan and review each message separately before signing.',
+        buttons: [{ text: 'OK' }]
+      })
+      return false
+    }
+
     const transactionInfos: SignTransactionInfo[] = await Promise.all(
       messageDefinitionObjects.map(async (messageDefinitionObject): Promise<SignTransactionInfo> => {
         return this.findMatchingSignWallet(messageDefinitionObject, messageWrapper.context)
