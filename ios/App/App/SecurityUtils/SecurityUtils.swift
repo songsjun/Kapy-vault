@@ -247,12 +247,6 @@ public class SecurityUtils: CAPPlugin {
     }
 }
 
-extension AppDelegate {
-    open func application(_ application: UIApplication, shoudlAllowExtensionPointIdentifier extensionPointIdentifier: UIApplication.ExtensionPointIdentifier) -> Bool {
-        return extensionPointIdentifier == .keyboard ? false : true
-    }
-}
-
 private extension CAPPluginCall {
     var reason: String? { return getString(SecurityUtils.Param.REASON) }
     var timeout: Int { return getInt(SecurityUtils.Param.TIMEOUT)! }

@@ -47,6 +47,11 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     return ApplicationDelegateProxy.shared.application(application, continue: userActivity, restorationHandler: restorationHandler)
   }
 
+  // Third-party keyboards can log mnemonics and passwords; only allow the system keyboard.
+  func application(_ application: UIApplication, shouldAllowExtensionPointIdentifier extensionPointIdentifier: UIApplication.ExtensionPointIdentifier) -> Bool {
+    return extensionPointIdentifier != .keyboard
+  }
+
 }
 
 // UIKit requires scene adoption for apps linked against the iOS 27 SDK.
