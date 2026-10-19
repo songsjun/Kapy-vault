@@ -112,7 +112,7 @@ export class DeviceService {
           callback()
         })
       })
-      this.screenCaptureStateChangedListeners.push(listener)
+      this.screenshotTakenListeners.push(listener)
     }
   }
 

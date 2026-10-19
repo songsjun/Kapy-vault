@@ -1,6 +1,7 @@
 import { Component } from '@angular/core'
 import { ActivatedRoute } from '@angular/router'
 import { MnemonicSecret } from 'src/app/models/secret'
+import { DeviceService } from 'src/app/services/device/device.service'
 import { ErrorCategory, handleErrorLocal } from 'src/app/services/error-handler/error-handler.service'
 import { NavigationService } from 'src/app/services/navigation/navigation.service'
 import { DefaultSecretAccess } from '../../services/navigation/default-secret-access'
@@ -24,7 +25,11 @@ export class SocialRecoveryGenerateShareShowPage {
     } else return ['No shares generated, something went wrong']
   }
 
-  constructor(private readonly navigationService: NavigationService, route: ActivatedRoute) {
+  constructor(
+    private readonly deviceService: DeviceService,
+    private readonly navigationService: NavigationService,
+    route: ActivatedRoute
+  ) {
     route.params.subscribe((_) => {
       this.access?.dispose()
       this.currentShare = this.navigationService.getState().currentShare
@@ -68,5 +73,7 @@ export class SocialRecoveryGenerateShareShowPage {
       .catch(handleErrorLocal(ErrorCategory.IONIC_NAVIGATION))
   }
   public ionViewWillEnter(): void { this.access.assert() }
+  public ionViewDidEnter(): void { this.deviceService.enableScreenshotProtection({ routeBack: 'social-recovery-generate-share-show' }) }
+  public ionViewWillLeave(): void { this.deviceService.disableScreenshotProtection() }
   public ngOnDestroy(): void { this.access?.dispose(); this.shares = [] }
 }

@@ -2,6 +2,7 @@ import { Component, ViewChild } from '@angular/core'
 import { ActivatedRoute } from '@angular/router'
 import { IonContent } from '@ionic/angular'
 import { MnemonicSecret } from 'src/app/models/secret'
+import { DeviceService } from 'src/app/services/device/device.service'
 import { ErrorCategory, handleErrorLocal } from 'src/app/services/error-handler/error-handler.service'
 import { NavigationService } from 'src/app/services/navigation/navigation.service'
 import { SecretsService } from 'src/app/services/secrets/secrets.service'
@@ -37,6 +38,7 @@ export class SocialRecoveryGenerateShareValidatePage {
   }
 
   constructor(
+    private readonly deviceService: DeviceService,
     private readonly secretsService: SecretsService,
     private readonly navigationService: NavigationService,
     route: ActivatedRoute
@@ -109,5 +111,7 @@ export class SocialRecoveryGenerateShareValidatePage {
     }
   }
   public ionViewWillEnter(): void { this.access.assert() }
+  public ionViewDidEnter(): void { this.deviceService.enableScreenshotProtection({ routeBack: 'social-recovery-generate-share-validate' }) }
+  public ionViewWillLeave(): void { this.deviceService.disableScreenshotProtection() }
   public ngOnDestroy(): void { this.access?.dispose(); this.clearSensitiveFields() }
 }
