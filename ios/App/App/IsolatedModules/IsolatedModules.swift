@@ -7,7 +7,6 @@
 
 import Foundation
 import Capacitor
-import CryptoKit
 
 @objc(IsolatedModules)
 public class IsolatedModules: CAPPlugin {
@@ -54,16 +53,8 @@ public class IsolatedModules: CAPPlugin {
             
             Task {
                 do {
-                    let module = try fileExplorer.loadPreviewModule(atPath: path, locatedIn: directory)
-                    let manifest = try fileExplorer.readModuleManifest(.preview(module))
-                    let files = try fileExplorer.readModuleFiles(.preview(module))
-                    
-                    let message = (files + [manifest]).reduce(Data()) { acc, next in acc + next }
-
-                    let jsonDecoder = JSONDecoder()
-                    let publicKey = try jsonDecoder.decode(ModuleManifest.self, from: manifest).publicKey
-
-                    let verified = try Curve25519.Signing.PublicKey(rawRepresentation: publicKey.asBytes()).isValidSignature(module.signature, for: message)
+                    // loadPreviewModule only succeeds for modules signed by a pinned trusted key.
+                    let verified = (try? fileExplorer.loadPreviewModule(atPath: path, locatedIn: directory)) != nil
                     
                     call.resolve([
                         "verified": verified

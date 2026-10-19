@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import CryptoKit
 
 // MARK: FileExplorer
 
@@ -32,7 +33,8 @@ struct FileExplorer {
     }
     
     func loadInstalledModules() throws -> [JSModule.Installed] {
-        try loadModules(using: documentExplorer, creatingModuleWith: JSModule.Installed.getInit(using: documentExplorer))
+        // Skip (rather than fail on) modules that no longer verify, so bundled modules keep loading.
+        try documentExplorer.listModules().compactMap { try? loadInstalledModule($0) }
     }
     
     func loadAssetModule(_ identifier: String) throws -> JSModule.Asset {
@@ -42,9 +44,17 @@ struct FileExplorer {
     }
     
     func loadInstalledModule(_ identifier: String) throws -> JSModule.Installed {
+        try FileExplorer.validateIdentifier(identifier)
         let manifest = try documentExplorer.readModuleManifest(identifier)
+        let module = try loadModule(identifier, fromManifest: manifest, creatingModuleWith: JSModule.Installed.getInit(using: documentExplorer))
         
-        return try loadModule(identifier, fromManifest: manifest, creatingModuleWith: JSModule.Installed.getInit(using: documentExplorer))
+        // Installed files live in the (backed up, writable) documents directory, re-verify on every load.
+        let signature = try documentExplorer.readModuleSignature(identifier)
+        guard try isTrusted(manifest: manifest, files: try documentExplorer.readModuleFiles(module, { _ in true }), signature: signature) else {
+            throw Error.untrustedModule
+        }
+        
+        return module
     }
     
     func loadPreviewModule(atPath path: String, locatedIn directory: Directory) throws -> JSModule.Preview {
@@ -57,7 +67,27 @@ struct FileExplorer {
         let manifest = try fileManager.contents(at: url.appendingPathComponent(FileExplorer.manifestFilename))
         let signature = try fileManager.contents(at: url.appendingPathComponent(FileExplorer.signatureFilename))
         
-        return try loadModule(identifier, fromManifest: manifest, creatingModuleWith: JSModule.Preview.getInit(withURL: url, andSignature: signature))
+        let module = try loadModule(identifier, fromManifest: manifest, creatingModuleWith: JSModule.Preview.getInit(withURL: url, andSignature: signature))
+        
+        // Previewing evaluates the module's code, so it must be trusted before anything runs.
+        guard try isTrusted(manifest: manifest, files: try readModuleFiles(.preview(module)), signature: signature) else {
+            throw Error.untrustedModule
+        }
+        
+        return module
+    }
+    
+    /// Checks that the module is signed by one of `trustedPublicKeys` over its files followed by its manifest.
+    func isTrusted(manifest manifestData: Data, files: [Data], signature: Data) throws -> Bool {
+        let manifest = try JSONDecoder().decode(ModuleManifest.self, from: manifestData)
+        let publicKey = manifest.publicKey.removing(prefix: "0x").lowercased()
+        guard FileExplorer.trustedPublicKeys.contains(publicKey) else {
+            return false
+        }
+        
+        let message = (files + [manifestData]).reduce(Data()) { acc, next in acc + next }
+        
+        return try Curve25519.Signing.PublicKey(rawRepresentation: publicKey.asBytes()).isValidSignature(signature, for: message)
     }
     
     func removeModules(_ identifiers: [String]) throws {
@@ -111,6 +141,7 @@ struct FileExplorer {
         let jsonDecoder = JSONDecoder()
     
         let manifest = try jsonDecoder.decode(ModuleManifest.self, from: manifestData)
+        try manifest.include.forEach(FileExplorer.validateRelativePath)
         let namespace = manifest.src?.namespace
         let preferredEnvironment = manifest.jsenv?.ios ?? .webview
         
@@ -268,6 +299,10 @@ private struct DocumentExplorer: SourcesExplorer, DynamicSourcesExplorer {
         try readData(atPath: modulePath(module, ofPath: FileExplorer.manifestFilename))
     }
     
+    func readModuleSignature(_ module: String) throws -> Data {
+        try readData(atPath: modulePath(module, ofPath: FileExplorer.signatureFilename))
+    }
+    
     private func readData(atPath path: String) throws -> Data {
         guard let url = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first?.appendingPathComponent(path) else {
             throw Error.invalidDirectory
@@ -345,6 +380,27 @@ private extension JSModule.Preview {
 private extension FileExplorer {
     static let manifestFilename: String = "manifest.json"
     static let signatureFilename: String = "module.sig"
+    
+    /// Ed25519 public keys (lowercase hex, no prefix) allowed to sign dynamic protocol modules.
+    /// Empty: importing dynamic modules is disabled until a vetted signing key is pinned here.
+    static let trustedPublicKeys: Set<String> = []
+    
+    static func validateIdentifier(_ identifier: String) throws {
+        guard identifier.range(of: "^[a-zA-Z0-9_-]+$", options: .regularExpression) != nil else {
+            throw Error.invalidPath
+        }
+    }
+    
+    /// Rejects manifest paths that could escape the module directory.
+    static func validateRelativePath(_ path: String) throws {
+        let components = path.split(separator: "/", omittingEmptySubsequences: false)
+        guard !path.isEmpty,
+              !path.hasPrefix("/"),
+              !path.contains("\\"),
+              !components.contains(where: { $0 == ".." || $0 == "." || $0.isEmpty }) else {
+            throw Error.invalidPath
+        }
+    }
 }
 
 private extension FileManager {
@@ -360,6 +416,7 @@ private extension FileManager {
 private enum Error: Swift.Error {
     case invalidPath
     case invalidDirectory
+    case untrustedModule
 }
 
 // MARK: Aliases

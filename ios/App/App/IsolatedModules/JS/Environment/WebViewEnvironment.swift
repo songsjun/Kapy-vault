@@ -31,7 +31,7 @@ class WebViewEnvironment: NSObject, JSEnvironment, WKNavigationDelegate {
         let script = """
             execute(
                 \(try module.namespace ?? (try JSUndefined.value.toJSONString())),
-                '\(module.identifier)',
+                \(try module.identifier.toJSONString()),
                 \(try action.toJSONString()),
                 function (result) {
                     postMessage("\(resultID)", { result: JSON.parse(JSON.stringify(result)) });
@@ -101,8 +101,12 @@ class WebViewEnvironment: NSObject, JSEnvironment, WKNavigationDelegate {
                     let userContentController = WKUserContentController()
                     userContentController.add(jsAsyncResult)
                     
+                    // Module code handles secret keys: deny it every network and storage channel.
+                    userContentController.add(try await Self.blockAllRequestsRuleList())
+                    
                     let webViewConfiguration = WKWebViewConfiguration()
                     webViewConfiguration.userContentController = userContentController
+                    webViewConfiguration.websiteDataStore = .nonPersistent()
                     
                     let webView = WKWebView(frame: .zero, configuration: webViewConfiguration)
                     webView.navigationDelegate = env
@@ -179,6 +183,32 @@ class WebViewEnvironment: NSObject, JSEnvironment, WKNavigationDelegate {
             Task { @MainActor in
                 activeTasks.removeAll()
             }
+        }
+        
+        @MainActor private static var blockAllRequests: WKContentRuleList?
+        
+        @MainActor
+        private static func blockAllRequestsRuleList() async throws -> WKContentRuleList {
+            if let ruleList = blockAllRequests {
+                return ruleList
+            }
+            
+            let rules = #"[{"trigger":{"url-filter":".*"},"action":{"type":"block"}}]"#
+            let ruleList: WKContentRuleList = try await withCheckedThrowingContinuation { continuation in
+                WKContentRuleListStore.default().compileContentRuleList(
+                    forIdentifier: "it.airgap.vault.isolated-modules.block-all",
+                    encodedContentRuleList: rules
+                ) { ruleList, error in
+                    if let ruleList = ruleList {
+                        continuation.resume(returning: ruleList)
+                    } else {
+                        continuation.resume(throwing: error ?? Error.invalidSource)
+                    }
+                }
+            }
+            blockAllRequests = ruleList
+            
+            return ruleList
         }
         
         @MainActor
