@@ -13,11 +13,15 @@ import MachO
 public enum DeviceIntegrity {
 
     private static let fileList = """
-    L3ByaXZhdGUvdmFyL3N0YXNoCi9wcml2YXRlL3Zhci9saWIvYXB0Ci9wcml2YXRlL3Zhci90bXAvY3lkaWEubG9nCi9wcml2YXRlL3Zhci9saWIvY3lkaWEKL3ByaXZhdGUvdmFyL21vYmlsZS9MaWJyYXJ5L1NCU2V0dGluZ3MvVGhlbWVzCi9MaWJyYXJ5L01vYmlsZVN1YnN0cmF0ZS9Nb2JpbGVTdWJzdHJhdGUuZHlsaWIKL0xpYnJhcnkvTW9iaWxlU3Vic3RyYXRlL0R5bmFtaWNMaWJyYXJpZXMvVmVlbmN5LnBsaXN0Ci9MaWJyYXJ5L01vYmlsZVN1YnN0cmF0ZS9EeW5hbWljTGlicmFyaWVzL0xpdmVDbG9jay5wbGlzdAovU3lzdGVtL0xpYnJhcnkvTGF1bmNoRGFlbW9ucy9jb20uaWtleS5iYm90LnBsaXN0Ci9TeXN0ZW0vTGlicmFyeS9MYXVuY2hEYWVtb25zL2NvbS5zYXVyaWsuQ3lkaWEuU3RhcnR1cC5wbGlzdAovdmFyL2NhY2hlL2FwdAovdmFyL2xpYi9hcHQKL3Zhci9saWIvY3lkaWEKL3Zhci9sb2cvc3lzbG9nCi92YXIvdG1wL2N5ZGlhLmxvZwovYmluL2Jhc2gKL2Jpbi9zaAovdXNyL3NiaW4vc3NoZAovdXNyL2xpYmV4ZWMvc3NoLWtleXNpZ24KL3Vzci9zYmluL3NzaGQKL3Vzci9iaW4vc3NoZAovdXNyL2xpYmV4ZWMvc2Z0cC1zZXJ2ZXIKL2V0Yy9zc2gvc3NoZF9jb25maWcKL2V0Yy9hcHQKL0FwcGxpY2F0aW9ucy9DeWRpYS5hcHAKL0FwcGxpY2F0aW9ucy9Sb2NrQXBwLmFwcAovQXBwbGljYXRpb25zL0ljeS5hcHAKL0FwcGxpY2F0aW9ucy9XaW50ZXJCb2FyZC5hcHAKL0FwcGxpY2F0aW9ucy9TQlNldHRpbmdzLmFwcAovQXBwbGljYXRpb25zL014VHViZS5hcHAKL0FwcGxpY2F0aW9ucy9JbnRlbGxpU2NyZWVuLmFwcAovQXBwbGljYXRpb25zL0Zha2VDYXJyaWVyLmFwcAovQXBwbGljYXRpb25zL2JsYWNrcmExbi5hcHA=
+    L3ByaXZhdGUvdmFyL3N0YXNoCi9wcml2YXRlL3Zhci9saWIvYXB0Ci9wcml2YXRlL3Zhci90bXAvY3lkaWEubG9nCi9wcml2YXRlL3Zhci9saWIvY3lkaWEKL3ByaXZhdGUvdmFyL21vYmlsZS9MaWJyYXJ5L1NCU2V0dGluZ3MvVGhlbWVzCi9MaWJyYXJ5L01vYmlsZVN1YnN0cmF0ZS9Nb2JpbGVTdWJzdHJhdGUuZHlsaWIKL0xpYnJhcnkvTW9iaWxlU3Vic3RyYXRlL0R5bmFtaWNMaWJyYXJpZXMvVmVlbmN5LnBsaXN0Ci9MaWJyYXJ5L01vYmlsZVN1YnN0cmF0ZS9EeW5hbWljTGlicmFyaWVzL0xpdmVDbG9jay5wbGlzdAovU3lzdGVtL0xpYnJhcnkvTGF1bmNoRGFlbW9ucy9jb20uaWtleS5iYm90LnBsaXN0Ci9TeXN0ZW0vTGlicmFyeS9MYXVuY2hEYWVtb25zL2NvbS5zYXVyaWsuQ3lkaWEuU3RhcnR1cC5wbGlzdAovdmFyL2NhY2hlL2FwdAovdmFyL2xpYi9hcHQKL3Zhci9saWIvY3lkaWEKL3Zhci9sb2cvc3lzbG9nCi92YXIvdG1wL2N5ZGlhLmxvZwovYmluL2Jhc2gKL2Jpbi9zaAovdXNyL3NiaW4vc3NoZAovdXNyL2xpYmV4ZWMvc3NoLWtleXNpZ24KL3Vzci9zYmluL3NzaGQKL3Vzci9iaW4vc3NoZAovdXNyL2xpYmV4ZWMvc2Z0cC1zZXJ2ZXIKL2V0Yy9zc2gvc3NoZF9jb25maWcKL2V0Yy9hcHQKL0FwcGxpY2F0aW9ucy9DeWRpYS5hcHAKL0FwcGxpY2F0aW9ucy9Sb2NrQXBwLmFwcAovQXBwbGljYXRpb25zL0ljeS5hcHAKL0FwcGxpY2F0aW9ucy9XaW50ZXJCb2FyZC5hcHAKL0FwcGxpY2F0aW9ucy9TQlNldHRpbmdzLmFwcAovQXBwbGljYXRpb25zL014VHViZS5hcHAKL0FwcGxpY2F0aW9ucy9JbnRlbGxpU2NyZWVuLmFwcAovQXBwbGljYXRpb25zL0Zha2VDYXJyaWVyLmFwcAovQXBwbGljYXRpb25zL2JsYWNrcmExbi5hcHAKL3Zhci9qYgovdmFyL2JpbnBhY2sKL3ByaXZhdGUvdmFyL2JpbnBhY2sKL3ByaXZhdGUvcHJlYm9vdC9qYgovdXNyL3NiaW4vZnJpZGEtc2VydmVyCi91c3IvbGliL2ZyaWRhCi9BcHBsaWNhdGlvbnMvU2lsZW8uYXBwCi9BcHBsaWNhdGlvbnMvWmVicmEuYXBw
     """
 
     private static let linkList = """
     L0xpYnJhcnkvUmluZ3RvbmVzCi9MaWJyYXJ5L1dhbGxwYXBlcgovdXNyL2luY2x1ZGUKL3Vzci9saWJleGVjCi91c3Ivc2hhcmUKL0FwcGxpY2F0aW9ucw==
+    """
+
+    private static let libraryList = """
+    bW9iaWxlc3Vic3RyYXRlCnN1YnN0aXR1dGUKbGliaG9va2VyCmVsbGVraXQKZnJpZGEKY3luamVjdApsaWJpbmplY3Rvcgp0d2Vha2luamVjdAovdmFyL2piLw==
     """
 
     private static let RTLD_DEFAULT = UnsafeMutableRawPointer(bitPattern: -2)
@@ -168,16 +172,18 @@ public enum DeviceIntegrity {
         typealias DyldGetImageName = @convention(c) (UInt32) -> UnsafePointer<Int8>
 
         guard
-            let substrarePath = "L0xpYnJhcnkvTW9iaWxlU3Vic3RyYXRl".base64Decode(),
+            let libraries = DeviceIntegrity.libraryList.base64Decode()?.split(separator: "\n"),
             let dyldImageCount: DyldImageCount = lookup(.dyldImageCount),
             let dyldGetImageName: DyldGetImageName = lookup(.dyldGetImageName) else {
                 return .state
         }
 
+        // Match hooking/injection frameworks (Substrate, Substitute, libhooker, ElleKit, Frida)
+        // and anything loaded from a rootless jailbreak prefix.
         let count = dyldImageCount()
         for i in 0..<count {
-            let path = String(cString: dyldGetImageName(i))
-            guard !path.hasPrefix(substrarePath) else {
+            let path = String(cString: dyldGetImageName(i)).lowercased()
+            guard !libraries.contains(where: { path.contains($0) }) else {
                 return .dynamicLib
             }
         }
