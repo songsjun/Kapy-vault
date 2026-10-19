@@ -44,9 +44,7 @@ struct FileExplorer {
     }
     
     func loadInstalledModule(_ identifier: String) throws -> JSModule.Installed {
-        try FileExplorer.validateIdentifier(identifier)
-        let manifest = try documentExplorer.readModuleManifest(identifier)
-        let module = try loadModule(identifier, fromManifest: manifest, creatingModuleWith: JSModule.Installed.getInit(using: documentExplorer))
+        let (module, manifest) = try readInstalledModule(identifier)
         
         // Installed files live in the (backed up, writable) documents directory, re-verify on every load.
         let signature = try documentExplorer.readModuleSignature(identifier)
@@ -91,7 +89,16 @@ struct FileExplorer {
     }
     
     func removeModules(_ identifiers: [String]) throws {
-        try documentExplorer.removeModules(identifiers.map({ try loadInstalledModule($0) }))
+        // Removal must not require trust, so untrusted modules can still be deleted.
+        try documentExplorer.removeModules(identifiers.map({ try readInstalledModule($0).module }))
+    }
+    
+    private func readInstalledModule(_ identifier: String) throws -> (module: JSModule.Installed, manifest: Data) {
+        try FileExplorer.validateIdentifier(identifier)
+        let manifest = try documentExplorer.readModuleManifest(identifier)
+        let module = try loadModule(identifier, fromManifest: manifest, creatingModuleWith: JSModule.Installed.getInit(using: documentExplorer))
+        
+        return (module, manifest)
     }
     
     func removeAllModules() throws {
