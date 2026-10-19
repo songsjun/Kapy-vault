@@ -16,11 +16,12 @@ public class Zip: CAPPlugin {
         call.assertReceived(forMethod: "unzip", requiredParams: Param.FROM, Param.TO)
         
         do {
-            guard let sourceURL = getFileURL(at: call.from, locatedIn: call.directory) else {
+            guard let sourceURL = getFileURL(at: call.from, locatedIn: call.directory), sourceURL.isFileURL else {
                 throw Error.invalidPath("from")
             }
             
-            guard let destinationURL = getFileURL(at: call.to, locatedIn: call.toDirectory) else {
+            // The source may be a picked file URL, but extraction must stay inside an app directory.
+            guard call.toDirectory != nil, let destinationURL = getFileURL(at: call.to, locatedIn: call.toDirectory) else {
                 throw Error.invalidPath("to")
             }
             
@@ -38,13 +39,18 @@ public class Zip: CAPPlugin {
     }
 
     /// Rejects archives containing entries that would be written outside `destinationURL`
-    /// (e.g. `../` components or absolute paths). Defends the extraction sink independently
+    /// (e.g. `../` components or absolute paths) and symlink entries, which could redirect
+    /// later entries out of the destination. Defends the extraction sink independently
     /// of the ZIPFoundation version (CVE-2023-39138).
     private func validateEntryPaths(of sourceURL: URL, against destinationURL: URL) throws {
         let archive = try Archive(url: sourceURL, accessMode: .read)
-        let root = destinationURL.standardizedFileURL.path
+        let resolvedDestinationURL = destinationURL.resolvingSymlinksInPath()
+        let root = resolvedDestinationURL.standardizedFileURL.path
         for entry in archive {
-            let target = destinationURL.appendingPathComponent(entry.path).standardizedFileURL.path
+            guard entry.type != .symlink else {
+                throw Error.pathTraversal(entry.path)
+            }
+            let target = resolvedDestinationURL.appendingPathComponent(entry.path).standardizedFileURL.path
             guard target == root || target.hasPrefix(root.hasSuffix("/") ? root : root + "/") else {
                 throw Error.pathTraversal(entry.path)
             }
