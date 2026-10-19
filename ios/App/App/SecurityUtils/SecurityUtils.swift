@@ -88,7 +88,7 @@ public class SecurityUtils: CAPPlugin {
     
     @objc func setInvalidationTimeout(_ call: CAPPluginCall) {
         call.assertReceived(forMethod: "LocalAuthentication_setInvalidationTimeout", requiredParams: Param.TIMEOUT)
-        LocalAuthentication.shared.invalidateAfter = TimeInterval(call.timeout)
+        LocalAuthentication.shared.setInvalidationTimeout(TimeInterval(call.timeout))
         call.resolve()
     }
     

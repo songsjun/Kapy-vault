@@ -193,9 +193,13 @@ class LocalAuthentication {
         queue.addOperation(operation)
     }
 
+    /// Upper bound for how long an authenticated context may be reused, so callers from the
+    /// WebView cannot disable re-authentication for secure storage access.
+    static let maxInvalidationTimeout: TimeInterval = 60
+
     func setInvalidationTimeout(_ timeout: TimeInterval) {
         queue.addOperation {
-            self.invalidateAfter = timeout
+            self.invalidateAfter = min(max(timeout, 0), LocalAuthentication.maxInvalidationTimeout)
         }
     }
 
