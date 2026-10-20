@@ -150,9 +150,17 @@ public class SecurityUtils: CAPPlugin {
             call.assertReceived(forMethod: "SecureStorage_removeAll", requiredParams: Param.ALIAS, Param.IS_PARANOIA)
             
             let secureStorage = self.storage(forAlias: call.alias, isParanoia: call.isParanoia)
-            _ = secureStorage.dropSecuredKey()
-            
-            call.resolve()
+            do {
+                try secureStorage.deleteAll()
+                _ = secureStorage.dropSecuredKey()
+                call.resolve()
+            } catch {
+                if let error = error as? VaultError {
+                    call.reject(error.description, "\(error.code.rawValue)", error)
+                } else {
+                    call.reject(error.localizedDescription, "-1", error)
+                }
+            }
         }
     }
     
@@ -222,7 +230,7 @@ public class SecurityUtils: CAPPlugin {
     
     private func storage(forAlias alias: String, isParanoia: Bool) -> SecureStorage {
         let tag = ("it.airgap.keys.biometrics.key-" + alias).data(using: .utf8)!
-        return SecureStorage(tag: tag, paranoiaMode: isParanoia)
+        return SecureStorage(tag: tag, service: "it.airgap.vault.secure-storage." + alias, paranoiaMode: isParanoia)
     }
     
     struct Param {

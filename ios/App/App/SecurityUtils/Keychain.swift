@@ -267,11 +267,13 @@ extension Keychain.PrivateKey {
     }
 
     public static func delete(tag: Data? = nil) -> Bool {
-        let query: [AnyHashable:Any] = [
+        var query: [AnyHashable:Any] = [
             kSecClass as String: kSecClassKey,
-            kSecAttrApplicationTag as String: tag,
             kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom
         ]
+        if let tag = tag {
+            query[kSecAttrApplicationTag as String] = tag
+        }
         let status = SecItemDelete(query as CFDictionary)
         return status.isSuccess || status == errSecItemNotFound
     }

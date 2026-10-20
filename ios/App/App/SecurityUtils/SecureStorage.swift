@@ -32,6 +32,8 @@ extension VaultError {
 class SecureStorage {
 
     let tag: Data
+    /// Keychain service scoping this storage's items, so aliases cannot read or overwrite each other.
+    let service: String
     let paranoiaMode: Bool
     var accessControlFlags: SecAccessControlCreateFlags {
         var flags: SecAccessControlCreateFlags = LocalAuthentication.defaultAccessFlags()
@@ -42,8 +44,9 @@ class SecureStorage {
         return flags
     }
 
-    init(tag: Data, paranoiaMode: Bool = false){
+    init(tag: Data, service: String, paranoiaMode: Bool = false){
         self.tag = tag
+        self.service = service
         self.paranoiaMode = paranoiaMode
     }
 
@@ -104,6 +107,10 @@ class SecureStorage {
     func dropSecuredKey() -> Bool {
         return Keychain.PrivateKey.delete(tag: tag)
     }
+    
+    func deleteAll() throws {
+        try Keychain.Password.delete(service: service)
+    }
 
     func store(key: String, value: String, completion: @escaping (VaultError?) -> ()) {
         fetchBiometricSecuredKey { result in
@@ -126,7 +133,7 @@ class SecureStorage {
             throw VaultError.dataConversionFailure
         }
         let encryptedData = try secretKey.encrypt(data: messageData)
-        let item = Keychain.Password(data: encryptedData, account: key)
+        let item = Keychain.Password(data: encryptedData, account: key, service: service)
         try item.save()
     }
 
@@ -147,7 +154,7 @@ class SecureStorage {
     }
     
     private func retrieve(key: String, using secretKey: Keychain.PrivateKey) throws -> String {
-        let item = try Keychain.Password.load(account: key)
+        let item = try Keychain.Password.load(account: key, service: service)
         let decryptedData = try secretKey.decrypt(data: item.data)
         guard let result = String(data: decryptedData as Data, encoding: .utf8) else {
             throw VaultError.stringConversionFailure
@@ -156,7 +163,7 @@ class SecureStorage {
     }
 
     func delete(key: String) throws {
-        try Keychain.Password.delete(account: key)
+        try Keychain.Password.delete(account: key, service: service)
     }
     
     static func delete() throws {
