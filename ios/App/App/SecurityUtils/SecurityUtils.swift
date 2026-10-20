@@ -65,6 +65,27 @@ public class SecurityUtils: CAPPlugin {
         }
     }
 
+    // MARK: - Clipboard
+    
+    /// Copies secret material without Universal Clipboard sync and with a short expiry.
+    @objc func copySensitive(_ call: CAPPluginCall) {
+        call.assertReceived(forMethod: "copySensitive", requiredParams: Param.VALUE)
+        let expiry = Date().addingTimeInterval(SecurityUtils.sensitiveClipboardLifetime)
+        DispatchQueue.main.async {
+            UIPasteboard.general.setItems([[UIPasteboard.typeAutomatic: call.value]], options: [.localOnly: true, .expirationDate: expiry])
+            call.resolve()
+        }
+    }
+    
+    @objc func clearClipboard(_ call: CAPPluginCall) {
+        DispatchQueue.main.async {
+            UIPasteboard.general.items = []
+            call.resolve()
+        }
+    }
+    
+    private static let sensitiveClipboardLifetime: TimeInterval = 60
+    
     // MARK: - Device Integrity
     
     @objc func assessDeviceIntegrity(_ call: CAPPluginCall) {

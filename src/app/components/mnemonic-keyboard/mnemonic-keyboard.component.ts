@@ -5,6 +5,7 @@ import { ModalController, PopoverController } from '@ionic/angular'
 import * as bip39 from 'bip39'
 import { Observable, Subscription } from 'rxjs'
 import { WordlistPage } from 'src/app/pages/wordlist/wordlist.page'
+import { DeviceService } from 'src/app/services/device/device.service'
 import { ErrorCategory, handleErrorLocal } from 'src/app/services/error-handler/error-handler.service'
 import { KeyboardPopoverComponent } from '../keyboard-popover/keyboard-popover.component'
 
@@ -72,6 +73,7 @@ export class MnemonicKeyboardComponent implements OnInit, OnDestroy {
 
   constructor(
     private readonly clipboardService: ClipboardService,
+    private readonly deviceService: DeviceService,
     private readonly modalController: ModalController,
     private readonly popoverCtrl: PopoverController
   ) {
@@ -183,6 +185,14 @@ export class MnemonicKeyboardComponent implements OnInit, OnDestroy {
     const text = await this.clipboardService.paste()
 
     this.pasted.emit(text)
+
+    // A pasted mnemonic must not linger where other apps or synced devices can read it.
+    if (text) {
+      const cleared = await this.deviceService.clearClipboard().catch(() => false)
+      if (!cleared) {
+        await this.clipboardService.copy('').catch(handleErrorLocal(ErrorCategory.OTHER))
+      }
+    }
   }
 
   async scramble() {

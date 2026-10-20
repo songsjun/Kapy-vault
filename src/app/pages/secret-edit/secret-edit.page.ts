@@ -4,6 +4,7 @@ import { PopoverController, Platform, ToastController, AlertController } from '@
 import { MnemonicSecret } from '../../models/secret'
 import { ErrorCategory, handleErrorLocal } from '../../services/error-handler/error-handler.service'
 import { NavigationService } from '../../services/navigation/navigation.service'
+import { DeviceService } from '../../services/device/device.service'
 import { SecretsService } from '../../services/secrets/secrets.service'
 
 import { TranslateService } from '@ngx-translate/core'
@@ -68,6 +69,7 @@ export class SecretEditPage {
     private readonly alertCtrl: AlertController,
     private readonly translateService: TranslateService,
     private readonly clipboardService: ClipboardService,
+    private readonly deviceService: DeviceService,
     private readonly secretsService: SecretsService,
     private readonly navigationService: NavigationService,
     private readonly storageService: VaultStorageService,
@@ -437,6 +439,12 @@ export class SecretEditPage {
     toast.present().catch(handleErrorLocal(ErrorCategory.IONIC_ALERT))
   }
 
+  private async copyRecoveryKey(recoveryKey: string): Promise<void> {
+    if (!(await this.deviceService.copySensitive(recoveryKey))) {
+      await this.clipboardService.copy(recoveryKey)
+    }
+  }
+
   private async showRecoveryKeyAlert(recoveryKey: string): Promise<void> {
     const alert: HTMLIonAlertElement = await this.alertCtrl.create({
       header: this.translateService.instant('secret-edit.secret-recovery-key.alert.title'),
@@ -449,8 +457,9 @@ export class SecretEditPage {
             if (!this.active || !this.canManage) {
               return
             }
-            this.clipboardService.copy(recoveryKey)
-            this.showToast('secret-edit.secret-recovery-key.copied')
+            this.copyRecoveryKey(recoveryKey)
+              .then(() => this.showToast('secret-edit.secret-recovery-key.copied'))
+              .catch(handleErrorLocal(ErrorCategory.OTHER))
           }
         },
         {

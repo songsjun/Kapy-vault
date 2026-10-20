@@ -123,6 +123,29 @@ export class DeviceService {
     }
   }
 
+  /**
+   * Copies secret material so it stays on this device and expires shortly.
+   * Returns false where the platform has no such clipboard; callers then fall back to a plain copy.
+   */
+  public async copySensitive(value: string): Promise<boolean> {
+    if (!(this.platform.is('ios') && this.platform.is('hybrid'))) {
+      return false
+    }
+    await this.securityUtils.copySensitive({ value })
+
+    return true
+  }
+
+  /** Clears the clipboard after secret material was pasted from it. */
+  public async clearClipboard(): Promise<boolean> {
+    if (!(this.platform.is('ios') && this.platform.is('hybrid'))) {
+      return false
+    }
+    await this.securityUtils.clearClipboard()
+
+    return true
+  }
+
   public async checkForElectron(): Promise<boolean> {
     return typeof navigator === 'object' && typeof navigator.userAgent === 'string' && navigator.userAgent.indexOf('Electron') >= 0
   }

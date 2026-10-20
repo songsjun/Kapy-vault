@@ -38,6 +38,8 @@ export const SaplingNative: SaplingNativePlugin = registerPlugin('SaplingNative'
 export interface SecurityUtilsPlugin {
   waitForOverlayDismiss(): Promise<void>
   assessDeviceIntegrity(): Promise<{ value: boolean }>
+  copySensitive(params: { value: string }): Promise<void>
+  clearClipboard(): Promise<void>
   authenticate(): Promise<void>
   setInvalidationTimeout({}): Promise<void>
   invalidate(): Promise<void>
