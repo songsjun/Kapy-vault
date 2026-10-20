@@ -1050,5 +1050,11 @@
     "review-error": "Unsupported or invalid PSBT. Use PSBT v0 with P2SH, P2SH-P2WSH or P2WSH multisig inputs and SIGHASH_ALL. Taproot signing is not supported here.",
     "sign-error": "Signing failed. Check that the open wallet and selected network match every input, then retry system authentication.",
     "single-request": "Scan one multisig transaction at a time."
+  },
+  "external-request": {
+    "header": "Request from another app",
+    "message": "Another app on this device opened AirGap Vault with a signing request. Continue only if you started this request yourself in AirGap Wallet.",
+    "continue": "Continue",
+    "cancel": "Reject"
   }
 }

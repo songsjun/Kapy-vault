@@ -1005,5 +1005,11 @@
     "review-error": "PSBT 无效或不受支持。请使用 PSBT v0、P2SH/P2SH-P2WSH/P2WSH 多签输入及 SIGHASH_ALL。此处不支持 Taproot 签名。",
     "sign-error": "签名失败。请确认当前钱包与所选网络匹配所有输入，并重新完成系统认证。",
     "single-request": "每次仅扫描一笔多签交易。"
+  },
+  "external-request": {
+    "header": "来自其他应用的请求",
+    "message": "本设备上的另一个应用通过链接打开了 AirGap Vault 并发送了签名请求。只有当这个请求是你自己在 AirGap Wallet 中发起的，才继续。",
+    "continue": "继续",
+    "cancel": "拒绝"
   }
 }

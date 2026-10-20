@@ -30,7 +30,7 @@ import { AppPlugin, URLOpenListenerEvent } from '@capacitor/app'
 import { PluginListenerHandle } from '@capacitor/core'
 import { SplashScreenPlugin } from '@capacitor/splash-screen'
 import { StatusBarPlugin, Style } from '@capacitor/status-bar'
-import { ModalController, Platform } from '@ionic/angular'
+import { AlertController, ModalController, Platform } from '@ionic/angular'
 import { TranslateService } from '@ngx-translate/core'
 import { Subscription } from 'rxjs'
 import { register } from 'swiper/element/bundle'
@@ -87,6 +87,7 @@ export class AppComponent implements AfterViewInit, OnDestroy {
     private readonly moduleService: VaultModulesService,
     private readonly router: Router,
     private readonly modalController: ModalController,
+    private readonly alertController: AlertController,
     private readonly walletAccess: WalletAccessService,
     @Inject(APP_PLUGIN) private readonly app: AppPlugin,
     @Inject(SECURITY_UTILS_PLUGIN) private readonly securityUtils: SecurityUtilsPlugin,
@@ -162,6 +163,10 @@ export class AppComponent implements AfterViewInit, OnDestroy {
         }
         const epoch = this.walletAccess.getContextId()
         this.ngZone.run(async () => {
+          // Any app can open our URL scheme, so the user has to vouch for where the request came from.
+          if (!(await this.confirmExternalRequest())) {
+            return
+          }
           // We defer this call because on iOS the app would sometimes get stuck on a black screen when handling deeplinks.
           defer(() => {
             try { this.walletAccess.assertContext(epoch) } catch (_) { return }
@@ -170,6 +175,22 @@ export class AppComponent implements AfterViewInit, OnDestroy {
         })
       }
     }))
+  }
+
+  private async confirmExternalRequest(): Promise<boolean> {
+    const alert = await this.alertController.create({
+      header: this.translateService.instant('external-request.header'),
+      message: this.translateService.instant('external-request.message'),
+      backdropDismiss: false,
+      buttons: [
+        { text: this.translateService.instant('external-request.cancel'), role: 'cancel' },
+        { text: this.translateService.instant('external-request.continue'), role: 'confirm' }
+      ]
+    })
+    await alert.present()
+    const { role } = await alert.onDidDismiss()
+
+    return role === 'confirm'
   }
 
   private closeWalletForBackground(): void {
