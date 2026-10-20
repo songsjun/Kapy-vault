@@ -112,6 +112,9 @@ class WebViewEnvironment: NSObject, JSEnvironment, WKNavigationDelegate {
                     webView.navigationDelegate = env
                     
                     do {
+                        // Content rule lists do not cover WebRTC, remove it before any module code runs.
+                        try await webView.evaluateJavaScriptAsync(Self.disableWebRTCScript)
+                        
                         guard let scriptSource = String(data: try env.fileExplorer.readIsolatedModulesScript(), encoding: .utf8) else {
                             throw Error.invalidSource
                         }
@@ -186,6 +189,15 @@ class WebViewEnvironment: NSObject, JSEnvironment, WKNavigationDelegate {
         }
         
         @MainActor private static var blockAllRequests: WKContentRuleList?
+        
+        private static let disableWebRTCScript = """
+            ['RTCPeerConnection', 'webkitRTCPeerConnection', 'RTCDataChannel', 'RTCSessionDescription', 'RTCIceCandidate'].forEach(function (name) {
+                Object.defineProperty(window, name, { value: undefined, writable: false, configurable: false });
+            });
+            if (navigator.mediaDevices) {
+                Object.defineProperty(navigator, 'mediaDevices', { value: undefined, writable: false, configurable: false });
+            }
+        """
         
         @MainActor
         private static func blockAllRequestsRuleList() async throws -> WKContentRuleList {
