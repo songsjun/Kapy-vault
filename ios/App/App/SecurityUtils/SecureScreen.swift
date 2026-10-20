@@ -33,6 +33,8 @@ public final class SecureScreen {
 
     private var secureField: UITextField?
     private var isSecureWindowEnabled: Bool = false
+    private var captureShield: UIView?
+    private var captureShieldObserver: Observer?
 
     let screen: UIScreen
 
@@ -74,22 +76,55 @@ public final class SecureScreen {
     }
 
     public func setWindowSecureFlag() {
-        guard !isSecureWindowEnabled else { return }
-        isSecureWindowEnabled = true
-
         DispatchQueue.main.async {
+            guard !self.isSecureWindowEnabled else { return }
             self.setupSecureField()
             self.secureField?.isSecureTextEntry = true
+            // Only latch the flag once protection is in place, so a missing window can be retried.
+            self.isSecureWindowEnabled = self.secureField != nil
+            self.startCaptureShield()
         }
     }
 
     public func clearWindowSecureFlag() {
-        guard isSecureWindowEnabled else { return }
-        isSecureWindowEnabled = false
-
         DispatchQueue.main.async {
+            guard self.isSecureWindowEnabled else { return }
+            self.isSecureWindowEnabled = false
             self.secureField?.isSecureTextEntry = false
+            self.stopCaptureShield()
         }
+    }
+
+    // MARK: - Screen Recording / Mirroring Shield
+
+    /// Screenshots are blocked by the secure field, but recording and mirroring only raise an event,
+    /// so cover secret content natively for as long as the screen is captured.
+    private func startCaptureShield() {
+        captureShieldObserver = Observer(name: UIScreen.capturedDidChangeNotification, object: screen) { [weak self] _ in
+            self?.updateCaptureShield()
+        }
+        updateCaptureShield()
+    }
+
+    private func stopCaptureShield() {
+        captureShieldObserver = nil
+        captureShield?.removeFromSuperview()
+        captureShield = nil
+    }
+
+    private func updateCaptureShield() {
+        guard screen.isCaptured else {
+            captureShield?.removeFromSuperview()
+            captureShield = nil
+            return
+        }
+        guard captureShield == nil, let window = getKeyWindow() else { return }
+
+        let shield = UIView(frame: window.bounds)
+        shield.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        shield.backgroundColor = .black
+        window.addSubview(shield)
+        captureShield = shield
     }
 
     public func startOverlayProtection() {
