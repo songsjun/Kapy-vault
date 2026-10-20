@@ -322,7 +322,7 @@ function editFixture(isDefault = true) {
   api.changeDefaultPassword = async (_secret, password) => writes.push(['default', password])
   api.removePassphrase = async (_secret, id) => writes.push(['remove', id])
   const secretService = { retrieveEntropyForSecret: async () => { writes.push(['entropy']); return '00' } }
-  const page = new SecretEditPage({ create: async () => ({ present: async () => undefined }) }, prompt, translate, {}, secretService,
+  const page = new SecretEditPage({ create: async () => ({ present: async () => undefined }) }, prompt, translate, {}, { copySensitive: async () => false }, secretService,
     nav, storage, lifehash, platform, { navigate: async () => true }, { dismiss: async () => undefined }, api)
   return { page, api, nav, prompt, writes }
 }
