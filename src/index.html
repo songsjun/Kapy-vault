@@ -13,7 +13,7 @@
     <meta name="format-detection" content="telephone=no" />
     <meta name="msapplication-tap-highlight" content="no" />
 
-    <!-- default-src should be 'none', but to be compatible with older webview versions, we have to be permissive -->
+    <!-- no 'unsafe-inline' for scripts: an injected <script> or inline handler must not be able to run -->
     <!-- script-src needs 'unsafe-eval' because of web3 -->
     <!-- connect-src needs data: because because of libsodium -->
     <!-- child-src needs blob: because worker-src is unknown in safari -->
@@ -21,8 +21,10 @@
     <meta
       http-equiv="Content-Security-Policy"
       content="
-        default-src 'self' 'unsafe-eval' 'unsafe-inline' blob: data:; 
-        script-src 'self' 'unsafe-eval' 'unsafe-inline';
+        default-src 'self';
+        script-src 'self' 'unsafe-eval';
+        base-uri 'self';
+        form-action 'none';
         connect-src 'self' data:;
         child-src blob:;
         object-src 'none';
