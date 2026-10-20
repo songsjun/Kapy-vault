@@ -1,5 +1,7 @@
 import { ErrorHandler, Injectable } from '@angular/core'
 
+import { redactSensitive } from './redact'
+
 export enum ErrorCategory {
   CORDOVA_PLUGIN = 'cordova_plugin',
   IONIC_MODAL = 'ionic_modal',
@@ -32,7 +34,7 @@ export class LocalErrorLogger {
 
   public async addLog(category: ErrorCategory, error: Error): Promise<void> {
     const storedErrors: ErrorHistoryObject[] = (await this.getErrorHistory()).slice(0, NUMBER_OF_ERRORS_CACHED - 1)
-    storedErrors.unshift([category, error.name, error.message, error.stack, new Date().getTime()])
+    storedErrors.unshift([category, error.name, redactSensitive(error.message), redactSensitive(error.stack), new Date().getTime()])
     localStorage.setItem(this.errorHistoryKey, JSON.stringify(storedErrors))
   }
 
